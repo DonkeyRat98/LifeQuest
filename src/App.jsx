@@ -1062,6 +1062,7 @@ function QuestForm({ skills, onCreate }) {
   const [tier, setTier] = useState("side");
   const [skillId, setSkillId] = useState(null);
   const [passion, setPassion] = useState(false);
+  const [notes, setNotes] = useState("");
   const [subs, setSubs] = useState([{ id: uid(), text: "", xp: 20, type: "check" }]);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiErr, setAiErr] = useState(null);
@@ -1073,8 +1074,10 @@ function QuestForm({ skills, onCreate }) {
     setAiBusy(true); setAiErr(null);
     try {
       const out = await askClaudeJSON({
-        system: 'You design quests for a personal life-RPG. Given a real-life goal, return ONLY valid JSON, no markdown fences, no preamble: {"tier":"side|main|epic","subtasks":[{"text":"...","xp":number,"type":"check|tally"}]}. Rules: 3-6 subtasks; "check" for one-time steps, "tally" for repeatable countable actions (e.g. "Application submitted"); xp between 10-100 scaled to effort; tier reflects overall scope (side=days, main=weeks, epic=months). Subtask text under 60 characters, concrete and verifiable.',
-        prompt: `Goal: ${title.trim()}`,
+        system: 'You design quests for a personal life-RPG. Given a real-life goal, return ONLY valid JSON, no markdown fences, no preamble: {"tier":"side|main|epic","subtasks":[{"text":"...","xp":number,"type":"check|tally"}]}. Rules: 3-6 subtasks; "check" for one-time steps, "tally" for repeatable countable actions (e.g. "Application submitted"); xp between 10-100 scaled to effort; tier reflects overall scope (side=days, main=weeks, epic=months). Subtask text under 60 characters, concrete and verifiable. If the user provides additional context (their current level, constraints, or what done looks like), use it to calibrate the difficulty and specificity of the subtasks to their situation.',
+        prompt: notes.trim()
+          ? `Goal: ${title.trim()}\nAdditional context from the user: ${notes.trim()}`
+          : `Goal: ${title.trim()}`,
         maxTokens: 500,
       });
       if (out.tier && TIERS[out.tier]) setTier(out.tier);
@@ -1109,6 +1112,12 @@ function QuestForm({ skills, onCreate }) {
   return (
     <Card style={{ marginBottom: 16, background: C.surface2 }}>
       <input style={inp} placeholder="Quest name — e.g. Learn SQL for BA roles" value={title} onChange={(e) => setTitle(e.target.value)} />
+      <textarea
+        style={{ ...inp, marginTop: 8, minHeight: 68, resize: "vertical", lineHeight: 1.5 }}
+        placeholder="Context for the AI (optional) — your current level, constraints, what done looks like"
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+      />
       <div style={{ display: "flex", gap: 6, margin: "8px 0" }}>
         <GhostBtn color={C.arcane} onClick={draftWithAI} disabled={aiBusy} style={{ flex: 1 }}>
           {aiBusy ? "Drafting…" : "✨ Draft objectives with AI"}
