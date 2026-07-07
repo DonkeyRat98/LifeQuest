@@ -129,14 +129,13 @@ const ACHIEVEMENTS = [
   { id: "skill-10", icon: "◆", name: "Master", desc: "Any skill to Level 10", check: (s) => s.skills.some((k) => skillLevel(k.xp) >= 10) },
   { id: "milestone-1", icon: "▲", name: "Summit", desc: "Conquer a milestone", check: (s) => countType(s, "milestone") >= 1 },
   { id: "milestone-5", icon: "⛰", name: "Peak Chaser", desc: "Conquer 5 milestones", check: (s) => countType(s, "milestone") >= 5 },
-  { id: "ability-para", icon: "⬢", name: "Paragon", desc: "Any ability to Level 5", check: (s) => ABILITIES.some((a) => abilityLevel(s.abilities[a.id] || 0) >= 5) },
-  { id: "ability-round", icon: "⬡", name: "Well-Rounded", desc: "All abilities Level 2+", check: (s) => ABILITIES.every((a) => abilityLevel(s.abilities[a.id] || 0) >= 2) },
+  { id: "ability-para", icon: "⬢", name: "Paragon", desc: "Any attribute to Level 5", check: (s) => ABILITIES.some((a) => abilityLevel(s.abilities[a.id] || 0) >= 5) },
+  { id: "ability-round", icon: "⬡", name: "Well-Rounded", desc: "All attributes Level 2+", check: (s) => ABILITIES.every((a) => abilityLevel(s.abilities[a.id] || 0) >= 2) },
   { id: "boss-1", icon: "☠", name: "Boss Slayer", desc: "Defeat a weekly boss", check: (s) => countType(s, "boss") >= 1 },
   { id: "boss-5", icon: "🜏", name: "Raid Leader", desc: "Defeat 5 weekly bosses", check: (s) => countType(s, "boss") >= 5 },
   { id: "xp-1000", icon: "❂", name: "Thousand Deeds", desc: "Earn 1,000 total XP", check: (s) => s.player.xp >= 1000 },
   { id: "vitals-10", icon: "♥", name: "Know Thyself", desc: "Log 10 tracker entries", check: (s) => s.trackers.reduce((n, t) => n + t.entries.length, 0) >= 10 },
   { id: "review-1", icon: "⚖", name: "Strategist", desc: "Complete a goal review", check: (s) => countType(s, "review") >= 1 },
-  { id: "target-1", icon: "◎", name: "Trueshot", desc: "Reach a Vitals target", check: (s) => s.trackers.some((t) => t.target && t.target.reachedAt) },
   { id: "shop-1", icon: "⚜", name: "Treat Yourself", desc: "Redeem a reward", check: (s) => countType(s, "purchase") >= 1 },
   { id: "gold-500", icon: "♚", name: "Dragon's Hoard", desc: "Hold 500 gold at once", check: (s) => (s.player.gold || 0) >= 500 },
 ];
@@ -177,8 +176,8 @@ const seedState = () => ({
   dailies: [{ id: uid(), name: "Practice guitar", xp: 15, lastDone: null, cue: "After dinner, 15 minutes", copingIf: "I'm too tired after dinner", copingThen: "play one song, badly", passion: true }],
   boss: null,
   achievements: [],
-  skills: [{ id: uid(), name: "Guitar", xp: 0, abilities: ["dex"], logs: [], passion: true, totalSessions: 0, milestone: null, lastMilestoneLevel: 0 }],
-  trackers: [{ id: uid(), name: "Weight", unit: "lbs", entries: [], target: null }],
+  skills: [{ id: uid(), name: "Guitar", xp: 0, kind: "discipline", abilities: ["dex"], logs: [], passion: true, totalSessions: 0, milestone: null, lastMilestoneLevel: 0 }],
+  trackers: [{ id: uid(), name: "Weight", unit: "lbs", entries: [], metricType: "simple", target: null }],
   rewards: [
     { id: uid(), name: "Fancy coffee", cost: 50 },
     { id: uid(), name: "New game or gear", cost: 800 },
@@ -208,11 +207,21 @@ const migrate = (s) => ({
     passion: false,
     milestone: null,
     lastMilestoneLevel: 0,
+    kind: "discipline",
     ...k,
     abilities: k.abilities || [],
     totalSessions: k.totalSessions ?? (k.logs || []).length,
   })),
-  trackers: (s.trackers || []).map((t) => ({ target: null, ...t, entries: t.entries || [] })),
+  /* trackers: legacy object targets ({value, reachedAt, …}) fold into metricType "target" + plain number */
+  trackers: (s.trackers || []).map((t) => {
+    const legacy = t.target && typeof t.target === "object";
+    return {
+      metricType: legacy ? "target" : "simple",
+      ...t,
+      target: legacy ? t.target.value : (typeof t.target === "number" ? t.target : null),
+      entries: t.entries || [],
+    };
+  }),
   rewards: s.rewards || [],
   reflections: s.reflections || [],
   chronicle: s.chronicle || [],
@@ -591,6 +600,15 @@ const Empty = ({ children }) => (
   <div style={{ color: C.dim, fontSize: 14, fontStyle: "italic", padding: "14px 4px" }}>{children}</div>
 );
 
+const Modal = ({ children, onClose }) => (
+  <div onClick={onClose}
+    style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.65)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 420, animation: "rise .25s ease" }}>
+      {children}
+    </div>
+  </div>
+);
+
 const Stat = ({ label, value, color, sub }) => (
   <Card style={{ textAlign: "center", padding: "14px 8px" }}>
     <div className="display" style={{ fontSize: 26, fontWeight: 700, color }}>{value}</div>
@@ -667,7 +685,7 @@ function CharacterView({ state, setState, lvl, title, onSignOut }) {
         )}
       </div>
 
-      <SectionTitle>Abilities</SectionTitle>
+      <SectionTitle>Attributes</SectionTitle>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
         {ABILITIES.map((a) => {
           const xp = state.abilities[a.id] || 0;
@@ -684,7 +702,7 @@ function CharacterView({ state, setState, lvl, title, onSignOut }) {
         })}
       </div>
       <div style={{ fontSize: 11, color: C.dim, margin: "6px 4px 0" }}>
-        Abilities rise only through linked skills — they are earned, never tapped.
+        Attributes rise only through linked skills — they are earned, never tapped.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 18 }}>
@@ -781,6 +799,8 @@ function SageSection({ state, setState }) {
 /* ── Quests (dailies + boss + quest log) ── */
 function QuestsView({ state, setState, grantXp }) {
   const [adding, setAdding] = useState(false);
+  const [confirmEditId, setConfirmEditId] = useState(null);
+  const [editId, setEditId] = useState(null);
 
   const withSkillFeed = (base, q, xp) => q.skillId ? applySkillGain(base, q.skillId, xp, "Quest", false) : base;
 
@@ -840,7 +860,42 @@ function QuestsView({ state, setState, grantXp }) {
       {adding && <QuestForm skills={state.skills} onCreate={(q) => { setState((s) => ({ ...s, quests: [q, ...s.quests] })); setAdding(false); }} />}
       {state.quests.length === 0 && !adding && <Empty>The board is bare. Post a new quest.</Empty>}
 
-      {state.quests.map((q) => {
+      {confirmEditId && (
+        <Modal onClose={() => setConfirmEditId(null)}>
+          <Card style={{ borderLeft: `3px solid ${C.gold}`, background: C.surface2 }}>
+            <div className="display" style={{ fontSize: 15, fontWeight: 700, color: C.gold, marginBottom: 8 }}>Editing a committed quest</div>
+            <div style={{ fontSize: 14, lineHeight: 1.6, color: C.parchment, marginBottom: 14 }}>
+              Are you changing it because the goal genuinely evolved, or because it got hard? Only proceed if it's the former.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { setEditId(confirmEditId); setConfirmEditId(null); }}
+                style={{ flex: 1, background: C.gold, color: C.bg, border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 13 }}>
+                Yes, the goal changed
+              </button>
+              <GhostBtn color={C.dim} onClick={() => setConfirmEditId(null)}>Cancel</GhostBtn>
+            </div>
+          </Card>
+        </Modal>
+      )}
+
+      {["epic", "main", "side"].map((tierKey) => {
+        const group = state.quests.filter((q) => q.tier === tierKey);
+        if (group.length === 0) return null;
+        return (
+          <div key={tierKey}>
+            <SectionTitle color={TIERS[tierKey].color}>{TIERS[tierKey].label}s</SectionTitle>
+            {group.map((q) => {
+        if (q.id === editId) {
+          return (
+            <QuestEditor key={q.id} q={q}
+              onCancel={() => setEditId(null)}
+              onSave={(patch) => {
+                setState((s) => ({ ...s, quests: s.quests.map((x) => x.id === q.id ? { ...x, ...patch } : x) }));
+                setEditId(null);
+              }}
+            />
+          );
+        }
         const tier = TIERS[q.tier];
         const checks = q.subtasks.filter((s) => s.type !== "tally");
         const done = checks.filter((s) => s.done).length;
@@ -894,10 +949,15 @@ function QuestsView({ state, setState, grantXp }) {
                   {checks.length > 0 ? `Claim reward · +${tier.bonus} XP` : `Mark complete · +${tier.bonus} XP`}
                 </button>
               )}
-              {!claimable && <GhostBtn color={C.dim} onClick={() => abandon(q.id)} style={{ marginLeft: "auto", fontSize: 12 }}>Abandon</GhostBtn>}
+              {!claimable && <GhostBtn color={C.dim} onClick={() => setConfirmEditId(q.id)} style={{ marginLeft: "auto", fontSize: 12 }}>Edit</GhostBtn>}
+              {claimable && <GhostBtn color={C.dim} onClick={() => setConfirmEditId(q.id)} style={{ fontSize: 12 }}>Edit</GhostBtn>}
+              {!claimable && <GhostBtn color={C.dim} onClick={() => abandon(q.id)} style={{ fontSize: 12 }}>Abandon</GhostBtn>}
               {claimable && checks.length === 0 && <GhostBtn color={C.dim} onClick={() => abandon(q.id)} style={{ fontSize: 12 }}>Abandon</GhostBtn>}
             </div>
           </Card>
+        );
+            })}
+          </div>
         );
       })}
     </div>
@@ -1307,6 +1367,10 @@ function QuestForm({ skills, onCreate }) {
           </button>
           <input style={{ ...inp, flex: 1 }} placeholder={s.type === "tally" ? "Tally — e.g. Application submitted" : "Objective"} value={s.text} onChange={(e) => setSub(s.id, { text: e.target.value })} />
           <input style={{ ...inp, width: 62 }} type="number" min="5" value={s.xp} onChange={(e) => setSub(s.id, { xp: e.target.value })} aria-label="XP value" />
+          {subs.length > 1 && (
+            <button onClick={() => setSubs((ss) => ss.filter((x) => x.id !== s.id))} aria-label="Remove objective"
+              style={{ background: "none", border: "none", color: C.dim, fontSize: 16, padding: "0 2px" }}>×</button>
+          )}
         </div>
       ))}
 
@@ -1335,6 +1399,61 @@ function QuestForm({ skills, onCreate }) {
   );
 }
 
+/* ── Quest editor (post-creation, behind the "goal changed" confirmation) ── */
+function QuestEditor({ q, onSave, onCancel }) {
+  const tier = TIERS[q.tier];
+  const [title, setTitle] = useState(q.title);
+  const [objs, setObjs] = useState(q.subtasks.map((st) => ({ ...st })));
+
+  const patch = (id, p) => setObjs((oo) => oo.map((o) => (o.id === id ? { ...o, ...p } : o)));
+  const del = (id) => setObjs((oo) => (oo.length > 1 ? oo.filter((o) => o.id !== id) : oo));
+  const add = () => setObjs((oo) => [...oo, { id: uid(), text: "", xp: 20, type: "check", done: false, count: 0, isNew: true }]);
+
+  const save = () => {
+    const cleaned = objs
+      .filter((o) => o.text.trim())
+      .map(({ isNew, ...o }) => ({ ...o, text: o.text.trim(), xp: Math.max(5, Number(o.xp) || 20) }));
+    if (!title.trim() || cleaned.length === 0) return;
+    onSave({ title: title.trim(), subtasks: cleaned });
+  };
+
+  const inp = { background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 };
+
+  return (
+    <Card style={{ marginBottom: 14, borderLeft: `3px solid ${tier.color}`, background: C.surface2 }}>
+      <div style={{ fontSize: 11, color: tier.color, letterSpacing: ".12em", textTransform: "uppercase", marginBottom: 8 }}>Editing · {tier.label}</div>
+      <input style={{ ...inp, width: "100%", marginBottom: 8 }} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Quest name" />
+      {objs.map((o) => (
+        <div key={o.id} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+          {o.isNew ? (
+            <button onClick={() => patch(o.id, { type: o.type === "check" ? "tally" : "check" })}
+              title={o.type === "check" ? "One-time step" : "Running tally"}
+              style={{ width: 40, alignSelf: "stretch", borderRadius: 8, border: `1px solid ${C.line}`, background: C.bg, color: o.type === "tally" ? C.gold : C.moss, fontSize: 14 }}>
+              {o.type === "tally" ? "№" : "✓"}
+            </button>
+          ) : (
+            <span title={o.type === "tally" ? `Running tally · ${o.count || 0} so far` : o.done ? "Already done" : "One-time step"}
+              style={{ width: 40, alignSelf: "stretch", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: `1px solid ${C.line}`, color: o.done ? C.moss : C.dim, fontSize: 14 }}>
+              {o.type === "tally" ? `№${o.count || 0}` : o.done ? "✓" : "○"}
+            </span>
+          )}
+          <input style={{ ...inp, flex: 1, textDecoration: o.done ? "line-through" : "none" }} value={o.text} onChange={(e) => patch(o.id, { text: e.target.value })} placeholder="Objective" />
+          <input style={{ ...inp, width: 62 }} type="number" min="5" value={o.xp} onChange={(e) => patch(o.id, { xp: e.target.value })} aria-label="XP value" />
+          <button onClick={() => del(o.id)} disabled={objs.length <= 1} aria-label="Remove objective"
+            style={{ background: "none", border: "none", color: C.dim, fontSize: 16, padding: "0 2px", opacity: objs.length <= 1 ? 0.3 : 1, cursor: objs.length <= 1 ? "not-allowed" : "pointer" }}>×</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+        <GhostBtn color={C.dim} onClick={add}>+ Objective</GhostBtn>
+        <button onClick={save} style={{ flex: 1, background: tier.color, color: C.bg, border: "none", borderRadius: 8, fontWeight: 700, fontSize: 14, padding: "9px 0" }}>
+          Save changes
+        </button>
+        <GhostBtn color={C.dim} onClick={onCancel}>Cancel</GhostBtn>
+      </div>
+    </Card>
+  );
+}
+
 /* ── Skills (milestones, passion, long-horizon view) ── */
 
 /* 8-week training histogram from logs */
@@ -1350,6 +1469,7 @@ function weeklyCounts(logs) {
 
 function SkillsView({ state, setState, grantXp }) {
   const [name, setName] = useState("");
+  const [newKind, setNewKind] = useState("discipline");
   const [newAbilities, setNewAbilities] = useState([]);
   const [newPassion, setNewPassion] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -1358,9 +1478,9 @@ function SkillsView({ state, setState, grantXp }) {
     if (!name.trim()) return;
     setState((s) => ({
       ...s,
-      skills: [...s.skills, { id: uid(), name: name.trim(), xp: 0, abilities: newAbilities, logs: [], passion: newPassion, totalSessions: 0, milestone: null, lastMilestoneLevel: 0 }],
+      skills: [...s.skills, { id: uid(), name: name.trim(), xp: 0, kind: newKind, abilities: newAbilities, logs: [], passion: newPassion, totalSessions: 0, milestone: null, lastMilestoneLevel: 0 }],
     }));
-    setName(""); setNewAbilities([]); setNewPassion(false);
+    setName(""); setNewKind("discipline"); setNewAbilities([]); setNewPassion(false);
   };
 
   const patchSkill = (skillId, patch) =>
@@ -1391,15 +1511,43 @@ function SkillsView({ state, setState, grantXp }) {
 
   const remove = (id) => setState((s) => ({ ...s, skills: s.skills.filter((x) => x.id !== id) }));
 
+  const renderCard = (sk) => (
+    <SkillCard key={sk.id} sk={sk}
+      fedBy={state.quests.filter((q) => q.skillId === sk.id).map((q) => q.title)}
+      editing={editing === sk.id}
+      onEditToggle={() => setEditing(editing === sk.id ? null : sk.id)}
+      onPatch={(p) => patchSkill(sk.id, p)}
+      onPractice={(p) => practice(sk.id, p)}
+      onMilestoneDone={() => completeMilestone(sk.id)}
+      onRemove={() => remove(sk.id)}
+    />
+  );
+
+  const disciplines = state.skills.filter((k) => k.kind !== "domain");
+  const domains = state.skills.filter((k) => k.kind === "domain");
+
   return (
     <div style={{ maxWidth: 560, margin: "0 auto", padding: "24px 16px" }}>
       <SectionTitle>Skill Tree</SectionTitle>
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New skill — e.g. SQL, Disc Golf"
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder={newKind === "domain" ? "New domain — e.g. Entrepreneurship" : "New skill — e.g. SQL, Disc Golf"}
             style={{ flex: 1, background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 }} />
           <PassionToggle on={newPassion} onToggle={() => setNewPassion((p) => !p)} compact />
           <GhostBtn onClick={addSkill}>Forge</GhostBtn>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          {[["discipline", "Discipline"], ["domain", "Domain"]].map(([k, label]) => (
+            <button key={k} onClick={() => setNewKind(k)}
+              style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, border: `1px solid ${newKind === k ? C.arcane : C.line}`, background: newKind === k ? `${C.arcane}22` : "transparent", color: newKind === k ? C.arcane : C.dim }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: C.dim, marginBottom: 8 }}>
+          {newKind === "domain"
+            ? "Domains are higher-level fields that grow only when quests feed them — no direct practice."
+            : "Disciplines are practiced directly, and quests can feed them too."}
         </div>
         <AbilityPicker selected={newAbilities} onChange={setNewAbilities} />
         <div style={{ fontSize: 11, color: C.dim, marginTop: 8 }}>
@@ -1407,21 +1555,19 @@ function SkillsView({ state, setState, grantXp }) {
         </div>
       </Card>
 
-      {state.skills.map((sk) => (
-        <SkillCard key={sk.id} sk={sk}
-          editing={editing === sk.id}
-          onEditToggle={() => setEditing(editing === sk.id ? null : sk.id)}
-          onPatch={(p) => patchSkill(sk.id, p)}
-          onPractice={(p) => practice(sk.id, p)}
-          onMilestoneDone={() => completeMilestone(sk.id)}
-          onRemove={() => remove(sk.id)}
-        />
-      ))}
+      <SectionTitle>Disciplines</SectionTitle>
+      {disciplines.length === 0 && <Empty>No disciplines yet — forge a skill you practice directly.</Empty>}
+      {disciplines.map(renderCard)}
+
+      <SectionTitle color={C.arcane}>Domains</SectionTitle>
+      {domains.length === 0 && <Empty>No domains yet — forge one for a broad field that quests will feed.</Empty>}
+      {domains.map(renderCard)}
     </div>
   );
 }
 
-function SkillCard({ sk, editing, onEditToggle, onPatch, onPractice, onMilestoneDone, onRemove }) {
+function SkillCard({ sk, fedBy, editing, onEditToggle, onPatch, onPractice, onMilestoneDone, onRemove }) {
+  const isDomain = sk.kind === "domain";
   const l = skillLevel(sk.xp);
   const frac = (sk.xp - skillFloor(l)) / (skillCeil(l) - skillFloor(l));
   const trainedToday = (sk.logs || []).some((g) => g.date === todayStr());
@@ -1462,7 +1608,7 @@ function SkillCard({ sk, editing, onEditToggle, onPatch, onPractice, onMilestone
             <div className="display" style={{ fontSize: 16, fontWeight: 700 }}>
               {sk.name}{sk.passion ? <span style={{ color: C.ember, fontSize: 13 }}> ♥</span> : null}
             </div>
-            {trainedToday && <span style={{ fontSize: 11, color: C.moss }}>trained today ✓</span>}
+            {trainedToday && <span style={{ fontSize: 11, color: C.moss }}>{isDomain ? "fed today ✓" : "trained today ✓"}</span>}
           </div>
           <div style={{ marginTop: 6 }}><Bar frac={frac} color={C.arcane} /></div>
           <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{sk.xp - skillFloor(l)} / {skillCeil(l) - skillFloor(l)} to Level {l + 1}</div>
@@ -1477,7 +1623,9 @@ function SkillCard({ sk, editing, onEditToggle, onPatch, onPractice, onMilestone
           ))}
         </div>
         <div style={{ fontSize: 11, color: C.dim, lineHeight: 1.4 }}>
-          {sk.totalSessions || 0} sessions total{firstLog ? ` · training since ${fmtDate(firstLog)}` : ""} · last 8 weeks
+          {isDomain
+            ? `${(sk.logs || []).length} quest feeds${firstLog ? ` · growing since ${fmtDate(firstLog)}` : ""} · last 8 weeks`
+            : `${sk.totalSessions || 0} sessions total${firstLog ? ` · training since ${fmtDate(firstLog)}` : ""} · last 8 weeks`}
         </div>
       </div>
 
@@ -1534,7 +1682,7 @@ function SkillCard({ sk, editing, onEditToggle, onPatch, onPractice, onMilestone
             );
           })
         ) : (
-          <span style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>No abilities linked — this skill feeds none.</span>
+          <span style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>No attributes linked — this skill feeds none.</span>
         )}
         <button onClick={onEditToggle}
           style={{ background: "none", border: "none", color: C.dim, fontSize: 11, textDecoration: "underline" }}>
@@ -1550,31 +1698,54 @@ function SkillCard({ sk, editing, onEditToggle, onPatch, onPractice, onMilestone
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
-        {PRACTICE.map((p) => (
-          <button key={p.label} onClick={() => onPractice(p)}
-            style={{ flex: 1, background: `${C.arcane}18`, border: `1px solid ${C.arcane}55`, color: C.parchment, borderRadius: 8, padding: "8px 4px", fontSize: 12 }}>
-            <div>{p.label}</div>
-            <div style={{ color: C.arcane, marginTop: 2 }}>+{p.xp}</div>
-          </button>
-        ))}
-      </div>
+      {isDomain ? (
+        <div style={{ marginTop: 12, fontSize: 12, color: C.dim }}>
+          {fedBy && fedBy.length > 0
+            ? <>Fed by: <span style={{ color: C.arcane }}>{fedBy.join(", ")}</span></>
+            : <span style={{ fontStyle: "italic" }}>Not yet fed by any quest — link one when posting a quest.</span>}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+          {PRACTICE.map((p) => (
+            <button key={p.label} onClick={() => onPractice(p)}
+              style={{ flex: 1, background: `${C.arcane}18`, border: `1px solid ${C.arcane}55`, color: C.parchment, borderRadius: 8, padding: "8px 4px", fontSize: 12 }}>
+              <div>{p.label}</div>
+              <div style={{ color: C.arcane, marginTop: 2 }}>+{p.xp}</div>
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ textAlign: "right", marginTop: 8 }}>
-        <button onClick={onRemove} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>retire skill</button>
+        <button onClick={onRemove} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>{isDomain ? "retire domain" : "retire skill"}</button>
       </div>
     </Card>
   );
 }
 
 /* ── Trackers ── */
+const METRIC_TYPES = [
+  { id: "simple", label: "Simple", hint: "Just observe — a value and its trend, nothing more." },
+  { id: "target", label: "Target value", hint: "A value you're moving toward and want to hold. Shown as a calm reference line — no scoring." },
+  { id: "nightly", label: "Nightly target", hint: "A per-entry target where the rolling average matters more than any single log." },
+];
+
 function TrackersView({ state, setState, showToast }) {
   const [name, setName] = useState("");
   const [unit, setUnit] = useState("");
+  const [metricType, setMetricType] = useState("simple");
+  const [target, setTarget] = useState("");
 
   const addTracker = () => {
     if (!name.trim()) return;
-    setState((s) => ({ ...s, trackers: [...s.trackers, { id: uid(), name: name.trim(), unit: unit.trim(), entries: [] }] }));
-    setName(""); setUnit("");
+    const tv = parseFloat(target);
+    setState((s) => ({
+      ...s,
+      trackers: [...s.trackers, {
+        id: uid(), name: name.trim(), unit: unit.trim(), entries: [],
+        metricType, target: metricType !== "simple" && !isNaN(tv) ? tv : null,
+      }],
+    }));
+    setName(""); setUnit(""); setMetricType("simple"); setTarget("");
   };
 
   const inp = { background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 };
@@ -1585,10 +1756,27 @@ function TrackersView({ state, setState, showToast }) {
       <div style={{ fontSize: 12, color: C.dim, margin: "0 2px 10px" }}>
         Your body's readouts — weight, sleep, mood, whatever you want to measure over time.
       </div>
-      <Card style={{ marginBottom: 16, display: "flex", gap: 8 }}>
-        <input style={{ ...inp, flex: 2 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="Tracker — e.g. Sleep" />
-        <input style={{ ...inp, flex: 1 }} value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="unit" />
-        <GhostBtn onClick={addTracker}>Add</GhostBtn>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <input style={{ ...inp, flex: 2 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="Tracker — e.g. Sleep" />
+          <input style={{ ...inp, flex: 1 }} value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="unit" />
+          <GhostBtn onClick={addTracker}>Add</GhostBtn>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          {METRIC_TYPES.map((m) => (
+            <button key={m.id} onClick={() => setMetricType(m.id)}
+              style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, border: `1px solid ${metricType === m.id ? C.ember : C.line}`, background: metricType === m.id ? `${C.ember}22` : "transparent", color: metricType === m.id ? C.ember : C.dim }}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+        {metricType !== "simple" && (
+          <input style={{ ...inp, width: "100%", marginBottom: 8 }} type="number" inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)}
+            placeholder={metricType === "nightly" ? "Per-entry target — e.g. 8" : "Target value — e.g. 220"} aria-label="Target value" />
+        )}
+        <div style={{ fontSize: 11, color: C.dim }}>
+          {METRIC_TYPES.find((m) => m.id === metricType).hint}
+        </div>
       </Card>
 
       {state.trackers.map((t) => (
@@ -1600,93 +1788,95 @@ function TrackersView({ state, setState, showToast }) {
 
 function TrackerCard({ t, setState, showToast }) {
   const [val, setVal] = useState("");
-  const [settingTarget, setSettingTarget] = useState(false);
+  const [editingTarget, setEditingTarget] = useState(false);
   const [tgtVal, setTgtVal] = useState("");
   const latest = t.entries[0];
   const first = t.entries[t.entries.length - 1];
   const delta = latest && first && t.entries.length > 1 ? latest.value - first.value : null;
-  const tg = t.target;
+  const type = t.metricType || "simple";
+  const target = type !== "simple" && typeof t.target === "number" ? t.target : null;
 
   const log = () => {
     const v = parseFloat(val);
     if (isNaN(v)) return;
-    /* outcome target: fill baseline on first log, detect a one-time reach.
-       Deliberately no XP/gold — outcome goals stay outside the reward economy. */
-    const start = tg ? (tg.start ?? v) : null;
-    const reachedNow = !!tg && !tg.reachedAt && (tg.value >= start ? v >= tg.value : v <= tg.value);
     setState((s) => ({
       ...s,
-      trackers: s.trackers.map((x) => x.id !== t.id ? x : {
-        ...x,
-        target: x.target ? { ...x.target, start: x.target.start ?? v, reachedAt: reachedNow ? todayStr() : x.target.reachedAt } : x.target,
-        entries: [{ date: todayStr(), value: v }, ...x.entries].slice(0, 120),
-      }),
-      chronicle: reachedNow
-        ? [{ id: uid(), date: todayStr(), text: `Target reached — ${t.name}: ${v}${t.unit ? " " + t.unit : ""}`, xp: 0, type: "target" }, ...s.chronicle]
-        : s.chronicle,
+      trackers: s.trackers.map((x) => x.id !== t.id ? x : { ...x, entries: [{ date: todayStr(), value: v }, ...x.entries].slice(0, 120) }),
     }));
     setVal("");
-    showToast(reachedNow ? `◎ Target reached: ${t.name} ${v} ${t.unit}` : `${t.name} logged: ${v} ${t.unit}`);
+    showToast(`${t.name} logged: ${v} ${t.unit}`);
   };
 
-  const setTarget = () => {
+  const saveTarget = () => {
     const v = parseFloat(tgtVal);
     if (isNaN(v)) return;
-    setState((s) => ({
-      ...s,
-      trackers: s.trackers.map((x) => x.id !== t.id ? x : {
-        ...x,
-        target: { value: v, start: x.entries[0] ? x.entries[0].value : null, setAt: todayStr(), reachedAt: null },
-      }),
-    }));
-    setTgtVal(""); setSettingTarget(false);
+    setState((s) => ({ ...s, trackers: s.trackers.map((x) => x.id !== t.id ? x : { ...x, target: v }) }));
+    setTgtVal(""); setEditingTarget(false);
   };
 
-  const clearTarget = () => setState((s) => ({ ...s, trackers: s.trackers.map((x) => x.id !== t.id ? x : { ...x, target: null }) }));
-
   const remove = () => setState((s) => ({ ...s, trackers: s.trackers.filter((x) => x.id !== t.id) }));
+
+  const round1 = (n) => Math.round(n * 10) / 10;
+  /* rolling average over entries logged in the last N days (nightly type) */
+  const avgSince = (days) => {
+    const cutoff = daysAgoStr(days - 1);
+    const win = t.entries.filter((e) => e.date >= cutoff);
+    return win.length ? round1(win.reduce((a, e) => a + e.value, 0) / win.length) : null;
+  };
+  const avg7 = type === "nightly" ? avgSince(7) : null;
+  const avg30 = type === "nightly" ? avgSince(30) : null;
 
   const pts = [...t.entries].reverse().slice(-20);
   let spark = null;
   if (pts.length >= 2) {
     const vals = pts.map((p) => p.value);
-    const min = Math.min(...vals, ...(tg ? [tg.value] : []));
-    const max = Math.max(...vals, ...(tg ? [tg.value] : []));
+    const min = Math.min(...vals, ...(target != null ? [target] : []));
+    const max = Math.max(...vals, ...(target != null ? [target] : []));
     const span = max - min || 1;
     const W = 260, H = 44;
     const y = (v) => H - ((v - min) / span) * (H - 6) - 3;
     const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${(i / (pts.length - 1)) * W},${y(p.value)}`).join(" ");
     spark = (
       <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ marginTop: 10 }}>
-        {tg && <line x1="0" x2={W} y1={y(tg.value)} y2={y(tg.value)} stroke={C.moss} strokeWidth="1" strokeDasharray="4 3" opacity="0.75" />}
+        {target != null && <line x1="0" x2={W} y1={y(target)} y2={y(target)} stroke={C.moss} strokeWidth="1" strokeDasharray="4 3" opacity="0.75" />}
         <path d={path} fill="none" stroke={C.ember} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     );
   }
 
-  /* gentle progress toward the target — distance only, never loss language */
-  let targetUi = null;
-  if (tg && tg.reachedAt) {
-    targetUi = (
-      <div style={{ marginTop: 10, fontSize: 12, color: C.moss }}>
-        ◎ Target reached — {tg.value} {t.unit} · {fmtDate(tg.reachedAt)} ✓
-      </div>
-    );
-  } else if (tg && latest && tg.start != null && tg.start !== tg.value) {
-    const frac = Math.min(1, Math.max(0, (tg.start - latest.value) / (tg.start - tg.value)));
-    const remaining = Math.round(Math.abs(tg.value - latest.value) * 10) / 10;
-    targetUi = (
-      <div style={{ marginTop: 10 }}>
-        <Bar frac={frac} color={C.moss} height={6} />
-        <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
-          Target {tg.value} {t.unit} · {remaining} {t.unit} to go — steady on
+  /* headline: nightly leads with the rolling average; others lead with the latest value */
+  const headline = type === "nightly"
+    ? (avg7 != null && (
+        <div style={{ textAlign: "right" }}>
+          <span className="display" style={{ fontSize: 22, fontWeight: 700, color: C.ember }}>{avg7}</span>
+          <span style={{ fontSize: 12, color: C.dim, marginLeft: 4 }}>{t.unit} · 7-day avg</span>
         </div>
+      ))
+    : (latest && (
+        <div style={{ textAlign: "right" }}>
+          <span className="display" style={{ fontSize: 22, fontWeight: 700, color: C.ember }}>{latest.value}</span>
+          <span style={{ fontSize: 12, color: C.dim, marginLeft: 4 }}>{t.unit}</span>
+        </div>
+      ));
+
+  /* per-type info line — informational only, no judgment */
+  let info = null;
+  if (type === "target" && target != null) {
+    info = (
+      <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>
+        Target {target} {t.unit}{latest ? <> · currently {round1(Math.abs(latest.value - target))} {t.unit} away</> : null}
       </div>
     );
-  } else if (tg) {
-    targetUi = (
-      <div style={{ marginTop: 10, fontSize: 12, color: C.dim }}>
-        Target set: {tg.value} {t.unit} — progress appears with your next log
+  } else if (type === "nightly") {
+    info = (
+      <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>
+        30-day avg {avg30 != null ? `${avg30} ${t.unit}` : "—"}{target != null ? <> · target {target} {t.unit}</> : null}{latest ? <> · last {latest.value}</> : null}
+      </div>
+    );
+  } else if (delta !== null) {
+    info = (
+      <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>
+        {delta > 0 ? "+" : ""}{round1(delta)} {t.unit} since first entry · {t.entries.length} logs
       </div>
     );
   }
@@ -1695,39 +1885,28 @@ function TrackerCard({ t, setState, showToast }) {
     <Card style={{ marginBottom: 14, borderLeft: `3px solid ${C.ember}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div className="display" style={{ fontSize: 16, fontWeight: 700 }}>{t.name}</div>
-        {latest && (
-          <div style={{ textAlign: "right" }}>
-            <span className="display" style={{ fontSize: 22, fontWeight: 700, color: C.ember }}>{latest.value}</span>
-            <span style={{ fontSize: 12, color: C.dim, marginLeft: 4 }}>{t.unit}</span>
-          </div>
-        )}
+        {headline}
       </div>
-      {delta !== null && (
-        <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>
-          {delta > 0 ? "+" : ""}{Math.round(delta * 10) / 10} {t.unit} since first entry · {t.entries.length} logs
-        </div>
-      )}
+      {info}
       {spark}
-      {targetUi}
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <input type="number" inputMode="decimal" value={val} onChange={(e) => setVal(e.target.value)} placeholder={`Today's ${t.name.toLowerCase()}`}
           style={{ flex: 1, background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 }} />
         <GhostBtn color={C.ember} onClick={log}>Log</GhostBtn>
       </div>
-      {settingTarget && (
+      {editingTarget && (
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
           <input type="number" inputMode="decimal" value={tgtVal} onChange={(e) => setTgtVal(e.target.value)} placeholder={`Target ${t.name.toLowerCase()}${t.unit ? ` (${t.unit})` : ""}`}
-            onKeyDown={(e) => e.key === "Enter" && setTarget()}
+            onKeyDown={(e) => e.key === "Enter" && saveTarget()}
             style={{ flex: 1, background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 }} />
-          <GhostBtn color={C.moss} onClick={setTarget}>Set</GhostBtn>
+          <GhostBtn color={C.moss} onClick={saveTarget}>Set</GhostBtn>
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 14, marginTop: 8 }}>
-        <button onClick={() => setSettingTarget((x) => !x)} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>
-          {settingTarget ? "cancel" : tg ? (tg.reachedAt ? "set a new target" : "change target") : "set target"}
-        </button>
-        {tg && !settingTarget && (
-          <button onClick={clearTarget} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>clear target</button>
+        {type !== "simple" && (
+          <button onClick={() => setEditingTarget((x) => !x)} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>
+            {editingTarget ? "cancel" : target != null ? "change target" : "set target"}
+          </button>
         )}
         <button onClick={remove} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>remove tracker</button>
       </div>
