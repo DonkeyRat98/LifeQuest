@@ -97,6 +97,22 @@ const fmtDate = (iso) => {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
 
+/* coping plan ("If [obstacle], then [response]") display line */
+const copingLine = (o) =>
+  o.copingIf && o.copingThen ? `If ${o.copingIf} → ${o.copingThen}`
+  : o.copingIf ? `If ${o.copingIf}…`
+  : o.copingThen ? `If stuck → ${o.copingThen}`
+  : null;
+
+/* goal review is due monthly once the board has quests old enough to drift */
+const REVIEW_EVERY_DAYS = 30;
+const REVIEW_XP = 30;
+const reviewDue = (s) =>
+  s.quests.length > 0 &&
+  (s.lastGoalReview
+    ? s.lastGoalReview <= daysAgoStr(REVIEW_EVERY_DAYS)
+    : s.quests.some((q) => q.createdAt && q.createdAt <= daysAgoStr(REVIEW_EVERY_DAYS)));
+
 /* ── Achievements ── */
 const countType = (s, type) => s.chronicle.filter((e) => e.type === type).length;
 const ACHIEVEMENTS = [
@@ -119,6 +135,8 @@ const ACHIEVEMENTS = [
   { id: "boss-5", icon: "🜏", name: "Raid Leader", desc: "Defeat 5 weekly bosses", check: (s) => countType(s, "boss") >= 5 },
   { id: "xp-1000", icon: "❂", name: "Thousand Deeds", desc: "Earn 1,000 total XP", check: (s) => s.player.xp >= 1000 },
   { id: "vitals-10", icon: "♥", name: "Know Thyself", desc: "Log 10 tracker entries", check: (s) => s.trackers.reduce((n, t) => n + t.entries.length, 0) >= 10 },
+  { id: "review-1", icon: "⚖", name: "Strategist", desc: "Complete a goal review", check: (s) => countType(s, "review") >= 1 },
+  { id: "target-1", icon: "◎", name: "Trueshot", desc: "Reach a Vitals target", check: (s) => s.trackers.some((t) => t.target && t.target.reachedAt) },
   { id: "shop-1", icon: "⚜", name: "Treat Yourself", desc: "Redeem a reward", check: (s) => countType(s, "purchase") >= 1 },
   { id: "gold-500", icon: "♚", name: "Dragon's Hoard", desc: "Hold 500 gold at once", check: (s) => (s.player.gold || 0) >= 500 },
 ];
@@ -156,17 +174,18 @@ const seedState = () => ({
       createdAt: todayStr(),
     },
   ],
-  dailies: [{ id: uid(), name: "Practice guitar", xp: 15, lastDone: null, cue: "After dinner, 15 minutes", passion: true }],
+  dailies: [{ id: uid(), name: "Practice guitar", xp: 15, lastDone: null, cue: "After dinner, 15 minutes", copingIf: "I'm too tired after dinner", copingThen: "play one song, badly", passion: true }],
   boss: null,
   achievements: [],
   skills: [{ id: uid(), name: "Guitar", xp: 0, abilities: ["dex"], logs: [], passion: true, totalSessions: 0, milestone: null, lastMilestoneLevel: 0 }],
-  trackers: [{ id: uid(), name: "Weight", unit: "lbs", entries: [] }],
+  trackers: [{ id: uid(), name: "Weight", unit: "lbs", entries: [], target: null }],
   rewards: [
     { id: uid(), name: "Fancy coffee", cost: 50 },
     { id: uid(), name: "New game or gear", cost: 800 },
   ],
   reflections: [],
   chronicle: [],
+  lastGoalReview: null,
 });
 
 const migrate = (s) => ({
@@ -177,10 +196,12 @@ const migrate = (s) => ({
   quests: (s.quests || []).map((q) => ({
     skillId: null,
     passion: false,
+    copingIf: "",
+    copingThen: "",
     ...q,
     subtasks: (q.subtasks || []).map((st) => ({ type: "check", count: 0, ...st })),
   })),
-  dailies: (s.dailies || []).map((d) => ({ cue: "", passion: false, ...d })),
+  dailies: (s.dailies || []).map((d) => ({ cue: "", passion: false, copingIf: "", copingThen: "", ...d })),
   boss: s.boss ? { req: null, ...s.boss } : null,
   achievements: s.achievements || [],
   skills: (s.skills || []).map((k) => ({
@@ -191,9 +212,11 @@ const migrate = (s) => ({
     abilities: k.abilities || [],
     totalSessions: k.totalSessions ?? (k.logs || []).length,
   })),
+  trackers: (s.trackers || []).map((t) => ({ target: null, ...t, entries: t.entries || [] })),
   rewards: s.rewards || [],
   reflections: s.reflections || [],
   chronicle: s.chronicle || [],
+  lastGoalReview: s.lastGoalReview || null,
 });
 
 /* apply XP to a skill and cascade shares into its linked abilities */
@@ -806,6 +829,7 @@ function QuestsView({ state, setState, grantXp }) {
 
   return (
     <div style={{ maxWidth: 560, margin: "0 auto", padding: "24px 16px" }}>
+      <GoalReviewSection state={state} setState={setState} grantXp={grantXp} />
       <DailiesSection state={state} setState={setState} grantXp={grantXp} />
       <BossSection state={state} setState={setState} grantXp={grantXp} />
 
@@ -831,6 +855,7 @@ function QuestsView({ state, setState, grantXp }) {
             <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
               {linkedSkill && <span style={{ fontSize: 11, color: C.arcane }}>Feeds skill: {linkedSkill.name}</span>}
               {q.passion && <span style={{ fontSize: 11, color: C.ember }}>♥ passion — XP only</span>}
+              {copingLine(q) && <span style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>⛨ {copingLine(q)}</span>}
             </div>
             {checks.length > 0 && (
               <div style={{ margin: "10px 0 12px" }}>
@@ -879,11 +904,130 @@ function QuestsView({ state, setState, grantXp }) {
   );
 }
 
+/* ── Goal review: the control-theory loop — set goals, get feedback,
+   revisit the goals themselves. Due monthly; keep / revise / retire. ── */
+function GoalReviewSection({ state, setState, grantXp }) {
+  const [dismissed, setDismissed] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [idx, setIdx] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState("");
+  const [tier, setTier] = useState("side");
+
+  if (!reviewDue(state) || dismissed) return null;
+
+  const quests = state.quests;
+  const q = quests[idx];
+
+  const finish = () => {
+    setState((s) => ({
+      ...s,
+      lastGoalReview: todayStr(),
+      chronicle: [{ id: uid(), date: todayStr(), text: "Goal review complete — the board is current", xp: 0, type: "review" }, ...s.chronicle],
+    }));
+    grantXp(REVIEW_XP, "Goal review complete");
+    setReviewing(false); setIdx(0); setEditing(false);
+  };
+
+  const advance = () => {
+    setEditing(false);
+    if (idx + 1 >= quests.length) finish();
+    else setIdx(idx + 1);
+  };
+
+  const retire = () => {
+    setEditing(false);
+    const wasLast = idx >= quests.length - 1;
+    setState((s) => ({
+      ...s,
+      quests: s.quests.filter((x) => x.id !== q.id),
+      chronicle: [{ id: uid(), date: todayStr(), text: `Retired at review — ${q.title}`, xp: 0, type: "note" }, ...s.chronicle],
+    }));
+    if (wasLast) finish();
+    // otherwise idx already points at the next quest after removal
+  };
+
+  const startRevise = () => { setTitle(q.title); setTier(q.tier); setEditing(true); };
+  const saveRevision = () => {
+    const t = title.trim();
+    const chosen = tier;
+    setState((s) => ({ ...s, quests: s.quests.map((x) => x.id !== q.id ? x : { ...x, title: t || x.title, tier: chosen }) }));
+    advance();
+  };
+
+  if (!reviewing || !q) {
+    return (
+      <Card style={{ marginBottom: 18, borderLeft: `3px solid ${C.arcane}`, background: `linear-gradient(180deg, ${C.surface2}, ${C.surface})` }}>
+        <div className="display" style={{ fontSize: 15, fontWeight: 700, color: C.arcane }}>⚖ The council convenes</div>
+        <div style={{ fontSize: 13, color: C.dim, margin: "6px 0 12px", lineHeight: 1.55 }}>
+          It's been a month. Walk the quest board — keep what still matters, revise what's drifted, retire what's done serving you. Retiring is a victory of judgment, not a defeat.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => { setReviewing(true); setIdx(0); }}
+            style={{ flex: 1, background: C.arcane, color: C.bg, border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 14 }}>
+            Begin review · +{REVIEW_XP} XP
+          </button>
+          <GhostBtn color={C.dim} onClick={() => setDismissed(true)} style={{ fontSize: 12 }}>Later</GhostBtn>
+        </div>
+      </Card>
+    );
+  }
+
+  const tierInfo = TIERS[q.tier];
+  const checks = q.subtasks.filter((s) => s.type !== "tally");
+  const done = checks.filter((s) => s.done).length;
+  const inp = { background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14, width: "100%" };
+
+  return (
+    <Card style={{ marginBottom: 18, borderLeft: `3px solid ${C.arcane}`, animation: "rise .3s ease" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ fontSize: 11, color: C.arcane, letterSpacing: ".14em", textTransform: "uppercase" }}>⚖ Goal review · {idx + 1} of {quests.length}</div>
+        <button onClick={() => { setReviewing(false); setEditing(false); }} style={{ background: "none", border: "none", color: C.dim, fontSize: 11, textDecoration: "underline" }}>pause</button>
+      </div>
+      <div className="display" style={{ fontSize: 17, fontWeight: 700, marginTop: 8 }}>{q.title}</div>
+      <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>
+        <span style={{ color: tierInfo.color }}>{tierInfo.label}</span>
+        {q.createdAt && <> · posted {fmtDate(q.createdAt)}</>}
+        {checks.length > 0 && <> · {done} of {checks.length} objectives done</>}
+      </div>
+      {checks.length > 0 && <div style={{ marginTop: 8 }}><Bar frac={done / checks.length} color={tierInfo.color} height={6} /></div>}
+
+      {editing ? (
+        <div style={{ marginTop: 12 }}>
+          <input style={inp} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Quest name" />
+          <div style={{ display: "flex", gap: 6, margin: "8px 0 10px" }}>
+            {Object.entries(TIERS).map(([k, t]) => (
+              <button key={k} onClick={() => setTier(k)}
+                style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, border: `1px solid ${tier === k ? t.color : C.line}`, background: tier === k ? `${t.color}22` : "transparent", color: tier === k ? t.color : C.dim }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={saveRevision} style={{ flex: 1, background: C.arcane, color: C.bg, border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13 }}>
+              Save & continue
+            </button>
+            <GhostBtn color={C.dim} onClick={() => setEditing(false)} style={{ fontSize: 12 }}>Cancel</GhostBtn>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button onClick={advance} style={{ flex: 1, background: C.moss, color: C.bg, border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 13 }}>Keep</button>
+          <GhostBtn color={C.gold} onClick={startRevise} style={{ flex: 1 }}>Revise</GhostBtn>
+          <GhostBtn color={C.ember} onClick={retire} style={{ flex: 1 }}>Retire</GhostBtn>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /* ── Dailies (with implementation-intention cues) ── */
 function DailiesSection({ state, setState, grantXp }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [cue, setCue] = useState("");
+  const [copingIf, setCopingIf] = useState("");
+  const [copingThen, setCopingThen] = useState("");
   const [xp, setXp] = useState(15);
   const [passion, setPassion] = useState(false);
   const today = todayStr();
@@ -897,8 +1041,8 @@ function DailiesSection({ state, setState, grantXp }) {
 
   const add = () => {
     if (!name.trim()) return;
-    setState((s) => ({ ...s, dailies: [...s.dailies, { id: uid(), name: name.trim(), cue: cue.trim(), xp: Math.max(5, Number(xp) || 15), lastDone: null, passion }] }));
-    setName(""); setCue(""); setXp(15); setPassion(false); setAdding(false);
+    setState((s) => ({ ...s, dailies: [...s.dailies, { id: uid(), name: name.trim(), cue: cue.trim(), copingIf: copingIf.trim(), copingThen: copingThen.trim(), xp: Math.max(5, Number(xp) || 15), lastDone: null, passion }] }));
+    setName(""); setCue(""); setCopingIf(""); setCopingThen(""); setXp(15); setPassion(false); setAdding(false);
   };
 
   const remove = (id) => setState((s) => ({ ...s, dailies: s.dailies.filter((x) => x.id !== id) }));
@@ -916,13 +1060,18 @@ function DailiesSection({ state, setState, grantXp }) {
             <input style={{ ...inp, flex: 1 }} placeholder="Daily task — e.g. Meditate 10 min" value={name} onChange={(e) => setName(e.target.value)} />
             <input style={{ ...inp, width: 64 }} type="number" min="5" value={xp} onChange={(e) => setXp(e.target.value)} aria-label="XP" />
           </div>
-          <input style={{ ...inp, width: "100%", marginBottom: 8 }} placeholder="When/where cue (optional) — e.g. After morning coffee" value={cue} onChange={(e) => setCue(e.target.value)} />
+          <input style={{ ...inp, width: "100%", marginBottom: 6 }} placeholder="When/where cue (optional) — e.g. After morning coffee" value={cue} onChange={(e) => setCue(e.target.value)} />
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            <input style={{ ...inp, flex: 1 }} placeholder="If I get stuck… (optional) — e.g. too tired after work" value={copingIf} onChange={(e) => setCopingIf(e.target.value)} />
+            <input style={{ ...inp, flex: 1 }} placeholder="…then I'll — e.g. do just 5 minutes" value={copingThen} onChange={(e) => setCopingThen(e.target.value)} />
+          </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <PassionToggle on={passion} onToggle={() => setPassion((p) => !p)} />
             <GhostBtn color={C.moss} onClick={add} style={{ flex: 1 }}>Add daily</GhostBtn>
           </div>
           <div style={{ fontSize: 11, color: C.dim, marginTop: 8 }}>
             A when/where cue ("After X, I'll Y") roughly doubles follow-through — the best-supported trick in habit research.
+            Naming your likely obstacle and a countermove ("If I get stuck…") is its sibling, a coping plan — the classic relapse preventer.
           </div>
         </Card>
       )}
@@ -942,6 +1091,7 @@ function DailiesSection({ state, setState, grantXp }) {
                     {d.name}{d.passion ? <span style={{ color: C.ember }}> ♥</span> : null}
                   </span>
                   {d.cue && <div style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>{d.cue}</div>}
+                  {copingLine(d) && <div style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>⛨ {copingLine(d)}</div>}
                 </div>
                 <span style={{ fontSize: 12, color: done ? C.dim : C.moss }}>+{d.xp}</span>
                 <button onClick={() => remove(d.id)} style={{ background: "none", border: "none", color: C.dim, fontSize: 13, padding: "0 2px" }} aria-label={`Remove ${d.name}`}>×</button>
@@ -1063,6 +1213,8 @@ function QuestForm({ skills, onCreate }) {
   const [skillId, setSkillId] = useState(null);
   const [passion, setPassion] = useState(false);
   const [notes, setNotes] = useState("");
+  const [copingIf, setCopingIf] = useState("");
+  const [copingThen, setCopingThen] = useState("");
   const [subs, setSubs] = useState([{ id: uid(), text: "", xp: 20, type: "check" }]);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiErr, setAiErr] = useState(null);
@@ -1100,6 +1252,7 @@ function QuestForm({ skills, onCreate }) {
     if (!title.trim() || cleaned.length === 0) return;
     onCreate({
       id: uid(), title: title.trim(), tier, skillId, passion, createdAt: todayStr(),
+      copingIf: copingIf.trim(), copingThen: copingThen.trim(),
       subtasks: cleaned.map((s) => ({
         id: s.id, text: s.text.trim(), xp: Math.max(5, Number(s.xp) || 20),
         type: s.type, done: false, count: 0,
@@ -1132,6 +1285,14 @@ function QuestForm({ skills, onCreate }) {
             {t.label}
           </button>
         ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, margin: "0 0 10px" }}>
+        <input style={{ ...inp, flex: 1 }} placeholder="If I get stuck… (optional)" value={copingIf} onChange={(e) => setCopingIf(e.target.value)} />
+        <input style={{ ...inp, flex: 1 }} placeholder="…then I'll" value={copingThen} onChange={(e) => setCopingThen(e.target.value)} />
+      </div>
+      <div style={{ fontSize: 11, color: C.dim, margin: "-4px 0 10px" }}>
+        Coping plan — name the likely obstacle and your countermove now, before it happens.
       </div>
 
       <div style={{ fontSize: 12, color: C.dim, margin: "4px 0 8px" }}>
@@ -1439,20 +1600,49 @@ function TrackersView({ state, setState, showToast }) {
 
 function TrackerCard({ t, setState, showToast }) {
   const [val, setVal] = useState("");
+  const [settingTarget, setSettingTarget] = useState(false);
+  const [tgtVal, setTgtVal] = useState("");
   const latest = t.entries[0];
   const first = t.entries[t.entries.length - 1];
   const delta = latest && first && t.entries.length > 1 ? latest.value - first.value : null;
+  const tg = t.target;
 
   const log = () => {
     const v = parseFloat(val);
     if (isNaN(v)) return;
+    /* outcome target: fill baseline on first log, detect a one-time reach.
+       Deliberately no XP/gold — outcome goals stay outside the reward economy. */
+    const start = tg ? (tg.start ?? v) : null;
+    const reachedNow = !!tg && !tg.reachedAt && (tg.value >= start ? v >= tg.value : v <= tg.value);
     setState((s) => ({
       ...s,
-      trackers: s.trackers.map((x) => x.id !== t.id ? x : { ...x, entries: [{ date: todayStr(), value: v }, ...x.entries].slice(0, 120) }),
+      trackers: s.trackers.map((x) => x.id !== t.id ? x : {
+        ...x,
+        target: x.target ? { ...x.target, start: x.target.start ?? v, reachedAt: reachedNow ? todayStr() : x.target.reachedAt } : x.target,
+        entries: [{ date: todayStr(), value: v }, ...x.entries].slice(0, 120),
+      }),
+      chronicle: reachedNow
+        ? [{ id: uid(), date: todayStr(), text: `Target reached — ${t.name}: ${v}${t.unit ? " " + t.unit : ""}`, xp: 0, type: "target" }, ...s.chronicle]
+        : s.chronicle,
     }));
     setVal("");
-    showToast(`${t.name} logged: ${v} ${t.unit}`);
+    showToast(reachedNow ? `◎ Target reached: ${t.name} ${v} ${t.unit}` : `${t.name} logged: ${v} ${t.unit}`);
   };
+
+  const setTarget = () => {
+    const v = parseFloat(tgtVal);
+    if (isNaN(v)) return;
+    setState((s) => ({
+      ...s,
+      trackers: s.trackers.map((x) => x.id !== t.id ? x : {
+        ...x,
+        target: { value: v, start: x.entries[0] ? x.entries[0].value : null, setAt: todayStr(), reachedAt: null },
+      }),
+    }));
+    setTgtVal(""); setSettingTarget(false);
+  };
+
+  const clearTarget = () => setState((s) => ({ ...s, trackers: s.trackers.map((x) => x.id !== t.id ? x : { ...x, target: null }) }));
 
   const remove = () => setState((s) => ({ ...s, trackers: s.trackers.filter((x) => x.id !== t.id) }));
 
@@ -1460,14 +1650,44 @@ function TrackerCard({ t, setState, showToast }) {
   let spark = null;
   if (pts.length >= 2) {
     const vals = pts.map((p) => p.value);
-    const min = Math.min(...vals), max = Math.max(...vals);
+    const min = Math.min(...vals, ...(tg ? [tg.value] : []));
+    const max = Math.max(...vals, ...(tg ? [tg.value] : []));
     const span = max - min || 1;
     const W = 260, H = 44;
-    const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${(i / (pts.length - 1)) * W},${H - ((p.value - min) / span) * (H - 6) - 3}`).join(" ");
+    const y = (v) => H - ((v - min) / span) * (H - 6) - 3;
+    const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${(i / (pts.length - 1)) * W},${y(p.value)}`).join(" ");
     spark = (
       <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ marginTop: 10 }}>
+        {tg && <line x1="0" x2={W} y1={y(tg.value)} y2={y(tg.value)} stroke={C.moss} strokeWidth="1" strokeDasharray="4 3" opacity="0.75" />}
         <path d={path} fill="none" stroke={C.ember} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
+    );
+  }
+
+  /* gentle progress toward the target — distance only, never loss language */
+  let targetUi = null;
+  if (tg && tg.reachedAt) {
+    targetUi = (
+      <div style={{ marginTop: 10, fontSize: 12, color: C.moss }}>
+        ◎ Target reached — {tg.value} {t.unit} · {fmtDate(tg.reachedAt)} ✓
+      </div>
+    );
+  } else if (tg && latest && tg.start != null && tg.start !== tg.value) {
+    const frac = Math.min(1, Math.max(0, (tg.start - latest.value) / (tg.start - tg.value)));
+    const remaining = Math.round(Math.abs(tg.value - latest.value) * 10) / 10;
+    targetUi = (
+      <div style={{ marginTop: 10 }}>
+        <Bar frac={frac} color={C.moss} height={6} />
+        <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
+          Target {tg.value} {t.unit} · {remaining} {t.unit} to go — steady on
+        </div>
+      </div>
+    );
+  } else if (tg) {
+    targetUi = (
+      <div style={{ marginTop: 10, fontSize: 12, color: C.dim }}>
+        Target set: {tg.value} {t.unit} — progress appears with your next log
+      </div>
     );
   }
 
@@ -1488,12 +1708,27 @@ function TrackerCard({ t, setState, showToast }) {
         </div>
       )}
       {spark}
+      {targetUi}
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <input type="number" inputMode="decimal" value={val} onChange={(e) => setVal(e.target.value)} placeholder={`Today's ${t.name.toLowerCase()}`}
           style={{ flex: 1, background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 }} />
         <GhostBtn color={C.ember} onClick={log}>Log</GhostBtn>
       </div>
-      <div style={{ textAlign: "right", marginTop: 8 }}>
+      {settingTarget && (
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <input type="number" inputMode="decimal" value={tgtVal} onChange={(e) => setTgtVal(e.target.value)} placeholder={`Target ${t.name.toLowerCase()}${t.unit ? ` (${t.unit})` : ""}`}
+            onKeyDown={(e) => e.key === "Enter" && setTarget()}
+            style={{ flex: 1, background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 }} />
+          <GhostBtn color={C.moss} onClick={setTarget}>Set</GhostBtn>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 14, marginTop: 8 }}>
+        <button onClick={() => setSettingTarget((x) => !x)} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>
+          {settingTarget ? "cancel" : tg ? (tg.reachedAt ? "set a new target" : "change target") : "set target"}
+        </button>
+        {tg && !settingTarget && (
+          <button onClick={clearTarget} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>clear target</button>
+        )}
         <button onClick={remove} style={{ background: "none", border: "none", color: C.dim, fontSize: 11 }}>remove tracker</button>
       </div>
     </Card>
@@ -1620,9 +1855,9 @@ function ChronicleView({ state }) {
 }
 
 const ChronicleRow = ({ e }) => {
-  const special = ["levelup", "achievement", "boss", "purchase", "milestone"].includes(e.type);
-  const color = e.type === "boss" ? C.ember : e.type === "purchase" ? C.moss : special ? C.gold : C.parchment;
-  const icon = e.type === "levelup" ? "⭑ " : e.type === "achievement" ? "❖ " : e.type === "boss" ? "☠ " : e.type === "purchase" ? "⚜ " : e.type === "milestone" ? "▲ " : "";
+  const special = ["levelup", "achievement", "boss", "purchase", "milestone", "review", "target"].includes(e.type);
+  const color = e.type === "boss" ? C.ember : e.type === "purchase" ? C.moss : e.type === "target" ? C.moss : e.type === "review" ? C.arcane : special ? C.gold : C.parchment;
+  const icon = e.type === "levelup" ? "⭑ " : e.type === "achievement" ? "❖ " : e.type === "boss" ? "☠ " : e.type === "purchase" ? "⚜ " : e.type === "milestone" ? "▲ " : e.type === "review" ? "⚖ " : e.type === "target" ? "◎ " : "";
   return (
     <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "9px 2px", borderBottom: `1px solid ${C.line}` }}>
       <span style={{ fontSize: 11, color: C.dim, width: 52, flexShrink: 0 }}>{fmtDate(e.date)}</span>
