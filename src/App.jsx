@@ -15,17 +15,18 @@ import { askClaude, askClaudeJSON } from "./lib/ai.js";
    · AI (via /api/claude proxy): weekly reflection, quest drafting,
      milestone suggestions                                            */
 
+/* Candlelit scriptorium — warm ink, vellum, candle gold, oxblood, verdigris */
 const C = {
-  bg: "#14121B",
-  surface: "#1E1B2A",
-  surface2: "#262238",
-  parchment: "#E9E1CD",
-  dim: "#9A917E",
-  gold: "#D4A843",
-  arcane: "#8B7FE8",
-  ember: "#C75C5C",
-  moss: "#6FA36B",
-  line: "#332E47",
+  bg: "#1A1310",
+  surface: "#241A13",
+  surface2: "#2E2218",
+  parchment: "#EFE0C5",
+  dim: "#A08D72",
+  gold: "#D9A45B",
+  arcane: "#6FA79A",
+  ember: "#B04A3A",
+  moss: "#8A9A5B",
+  line: "#3A2C21",
 };
 
 const ABILITIES = [
@@ -97,12 +98,16 @@ const fmtDate = (iso) => {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
 
-/* coping plan ("If [obstacle], then [response]") display line */
-const copingLine = (o) =>
-  o.copingIf && o.copingThen ? `If ${o.copingIf} → ${o.copingThen}`
-  : o.copingIf ? `If ${o.copingIf}…`
-  : o.copingThen ? `If stuck → ${o.copingThen}`
-  : null;
+/* coping plan ("If [obstacle], then [response]") display line.
+   Strips a leading "if" the user may have typed, so we don't render "If If…" */
+const copingLine = (o) => {
+  const cIf = (o.copingIf || "").replace(/^if\s+/i, "");
+  const cThen = (o.copingThen || "").replace(/^then\s+/i, "");
+  return cIf && cThen ? `If ${cIf} → then ${cThen}`
+    : cIf ? `If ${cIf}…`
+    : cThen ? `If stuck → then ${cThen}`
+    : null;
+};
 
 /* goal review is due monthly once the board has quests old enough to drift */
 const REVIEW_EVERY_DAYS = 30;
@@ -331,15 +336,24 @@ const Shell = ({ children, center }) => (
 
 const GlobalStyle = () => (
   <style>{`
-    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&display=swap');
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; background: ${C.bg}; }
+    body::after {
+      content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1; opacity: .09;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    body::before {
+      content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1;
+      background: radial-gradient(ellipse 120% 90% at 50% 28%, transparent 42%, rgba(8,5,3,.42) 100%);
+    }
     input, button, textarea { font-family: inherit; }
     input:focus, button:focus-visible, textarea:focus { outline: 2px solid ${C.gold}; outline-offset: 1px; }
     button { cursor: pointer; }
     @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes glowpulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
     @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
-    .display { font-family: 'Cinzel', Palatino, serif; letter-spacing: .04em; }
+    .display { font-family: 'IM Fell English', 'Palatino Linotype', Palatino, serif; letter-spacing: .02em; }
     ::placeholder { color: ${C.dim}; opacity: .7; }
   `}</style>
 );
@@ -572,14 +586,33 @@ function LifeQuest({ userId, onSignOut }) {
 }
 
 /* ── shared bits ── */
+const bracket = (pos) => ({
+  position: "absolute", width: 10, height: 10, pointerEvents: "none",
+  ...(pos.includes("t") ? { top: 4, borderTop: `1px solid ${C.gold}55` } : { bottom: 4, borderBottom: `1px solid ${C.gold}55` }),
+  ...(pos.includes("l") ? { left: 4, borderLeft: `1px solid ${C.gold}55` } : { right: 4, borderRight: `1px solid ${C.gold}55` }),
+});
+
 const Card = ({ children, style }) => (
-  <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, ...style }}>{children}</div>
+  <div style={{ position: "relative", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, ...style }}>
+    <span aria-hidden="true" style={bracket("tl")} />
+    <span aria-hidden="true" style={bracket("tr")} />
+    <span aria-hidden="true" style={bracket("bl")} />
+    <span aria-hidden="true" style={bracket("br")} />
+    {children}
+  </div>
 );
 
 const SectionTitle = ({ children, right, color = C.gold }) => (
-  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "22px 2px 10px" }}>
-    <div className="display" style={{ fontSize: 13, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: ".18em" }}>{children}</div>
-    {right}
+  <div style={{ margin: "22px 2px 10px" }}>
+    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+      <div className="display" style={{ fontSize: 13, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: ".18em" }}>{children}</div>
+      {right}
+    </div>
+    <div aria-hidden="true" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+      <span style={{ flex: 1, height: 1, background: C.line }} />
+      <span style={{ color: `${color}88`, fontSize: 12, lineHeight: 1 }}>❧</span>
+      <span style={{ flex: 1, height: 1, background: C.line }} />
+    </div>
   </div>
 );
 
@@ -811,7 +844,12 @@ function SageSection({ state, setState }) {
       {latest ? (
         <Card style={{ borderLeft: `3px solid ${C.arcane}` }}>
           <div style={{ fontSize: 11, color: C.dim, marginBottom: 6 }}>{fmtDate(latest.date)}</div>
-          <div style={{ fontSize: 14, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{latest.text}</div>
+          <div style={{ fontSize: 14, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
+            <span className="display" style={{ float: "left", fontSize: 40, lineHeight: 0.85, color: C.gold, padding: "3px 8px 0 2px" }}>
+              {latest.text.charAt(0)}
+            </span>
+            {latest.text.slice(1)}
+          </div>
         </Card>
       ) : (
         !err && <Empty>Once a week, the Sage will read your chronicle and offer counsel. Best consulted on Sundays.</Empty>
@@ -2064,7 +2102,15 @@ const ChronicleRow = ({ e }) => {
   return (
     <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "9px 2px", borderBottom: `1px solid ${C.line}` }}>
       <span style={{ fontSize: 11, color: C.dim, width: 52, flexShrink: 0 }}>{fmtDate(e.date)}</span>
-      <span style={{ flex: 1, fontSize: 13, color, fontWeight: special ? 700 : 400 }}>{icon}{e.text}</span>
+      <span style={{ flex: 1, fontSize: 13, color, fontWeight: special ? 700 : 400 }}>
+        {icon}
+        {special ? e.text : (
+          <>
+            <span className="display" style={{ color: C.ember, fontSize: 15 }}>{e.text.charAt(0)}</span>
+            {e.text.slice(1)}
+          </>
+        )}
+      </span>
       {e.xp > 0 && <span style={{ fontSize: 12, color: C.gold, whiteSpace: "nowrap" }}>+{e.xp}</span>}
       {e.gold < 0 && <span style={{ fontSize: 12, color: C.ember, whiteSpace: "nowrap" }}>{e.gold}g</span>}
     </div>

@@ -291,7 +291,8 @@ Update this table with each feature commit.
 
 | Date | Commit | Changes |
 |---|---|---|
-| 2026-07-07 | `HEAD` | Added "Reset character" button on the Character tab — confirmation modal warning of permanent erasure, then overwrites the save with a fresh `seedState()`. |
+| 2026-07-07 | `HEAD` | "Candlelit scriptorium" retheme: warm umber/vellum/candle-gold palette (arcane role now verdigris, ember now oxblood, moss now sage-olive), IM Fell English display type, parchment grain + candlelight vignette, fleuron section dividers, gold corner brackets on cards, drop caps on Sage reflections, rubricated chronicle initials. Coping-plan display now strips a leading "If/then" typed by the user. |
+| 2026-07-07 | `6460de6` | Added "Reset character" button on the Character tab — confirmation modal warning of permanent erasure, then overwrites the save with a fresh `seedState()`. |
 | 2026-07-07 | `0d14af8` | "Abilities" renamed to "Attributes" (display only). Skills split into Disciplines and Domains (quest-fed, "Fed by" line). Quest objectives deletable in form; posted quests editable behind a "did the goal genuinely change?" modal. Quest Log grouped by tier headings. Vitals metric types (simple / target value / nightly target) with dashed reference lines and 7/30-day rolling averages; replaced v1 outcome-target progress bar, reach detection, and Trueshot achievement with purely informational display. |
 | 2026-07-06 | `cb068da` | Coping plans ("If I get stuck… / then I'll…") on dailies and quests. Monthly Goal Review (keep/revise/retire, +30 XP, Strategist achievement). Vitals outcome targets v1 (progress bar + reach detection — superseded next commit). |
 | 2026-07-06 | `5ff1953` | Notes box on AI quest drafting for user context. |
