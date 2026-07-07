@@ -659,6 +659,7 @@ function CharacterView({ state, setState, lvl, title, onSignOut }) {
   const doneQuests = state.chronicle.filter((c) => c.type === "quest").length;
   const R = 74, circ = 2 * Math.PI * R;
   const multActive = state.player.streak >= STREAK_MULT_AT;
+  const [confirmReset, setConfirmReset] = useState(false);
 
   return (
     <div style={{ maxWidth: 560, margin: "0 auto", padding: "28px 16px" }}>
@@ -735,11 +736,34 @@ function CharacterView({ state, setState, lvl, title, onSignOut }) {
       {state.chronicle.slice(0, 5).map((e) => <ChronicleRow key={e.id} e={e} />)}
       {state.chronicle.length === 0 && <Empty>Your story is unwritten. Complete a quest step to begin it.</Empty>}
 
-      <div style={{ textAlign: "center", marginTop: 30 }}>
+      <div style={{ textAlign: "center", marginTop: 30, display: "flex", flexDirection: "column", gap: 12 }}>
         <button onClick={onSignOut} style={{ background: "none", border: "none", color: C.dim, fontSize: 12, textDecoration: "underline" }}>
           Sign out
         </button>
+        <button onClick={() => setConfirmReset(true)} style={{ background: "none", border: "none", color: C.ember, fontSize: 12, textDecoration: "underline" }}>
+          Reset character
+        </button>
       </div>
+
+      {confirmReset && (
+        <Modal onClose={() => setConfirmReset(false)}>
+          <Card style={{ borderLeft: `3px solid ${C.ember}`, background: C.surface2 }}>
+            <div className="display" style={{ fontSize: 15, fontWeight: 700, color: C.ember, marginBottom: 8 }}>Reset your character?</div>
+            <div style={{ fontSize: 14, lineHeight: 1.6, color: C.parchment, marginBottom: 14 }}>
+              This permanently erases everything — your level, XP, gold, streak, skills,
+              quests, vitals, achievements, and chronicle — and starts a brand-new character
+              from scratch. It cannot be undone, and there is no backup.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { setState(seedState()); setConfirmReset(false); }}
+                style={{ flex: 1, background: C.ember, color: C.bg, border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 13 }}>
+                Erase everything
+              </button>
+              <GhostBtn color={C.dim} onClick={() => setConfirmReset(false)}>Cancel</GhostBtn>
+            </div>
+          </Card>
+        </Modal>
+      )}
     </div>
   );
 }

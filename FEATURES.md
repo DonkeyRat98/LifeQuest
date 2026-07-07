@@ -236,6 +236,11 @@ All AI calls go through the `/api/claude` proxy (`src/lib/ai.js`).
   the app works offline and shows a sync indicator (synced / saving / offline).
 - A `migrate()` function backfills defaults for every new field, so old saves
   never break. **Any new feature must add its defaults there.**
+- **Reset character:** a link on the Character tab (below Sign out) opens a
+  confirmation modal warning that everything is permanently erased with no backup;
+  confirming overwrites the save with a fresh `seedState()`, which the normal
+  autosave then persists to both cloud and cache. This is the sanctioned way to
+  start over (the client has no delete permission by design).
 
 State shape (top level):
 
@@ -286,6 +291,7 @@ Update this table with each feature commit.
 
 | Date | Commit | Changes |
 |---|---|---|
+| 2026-07-07 | `HEAD` | Added "Reset character" button on the Character tab — confirmation modal warning of permanent erasure, then overwrites the save with a fresh `seedState()`. |
 | 2026-07-07 | `0d14af8` | "Abilities" renamed to "Attributes" (display only). Skills split into Disciplines and Domains (quest-fed, "Fed by" line). Quest objectives deletable in form; posted quests editable behind a "did the goal genuinely change?" modal. Quest Log grouped by tier headings. Vitals metric types (simple / target value / nightly target) with dashed reference lines and 7/30-day rolling averages; replaced v1 outcome-target progress bar, reach detection, and Trueshot achievement with purely informational display. |
 | 2026-07-06 | `cb068da` | Coping plans ("If I get stuck… / then I'll…") on dailies and quests. Monthly Goal Review (keep/revise/retire, +30 XP, Strategist achievement). Vitals outcome targets v1 (progress bar + reach detection — superseded next commit). |
 | 2026-07-06 | `5ff1953` | Notes box on AI quest drafting for user context. |
