@@ -93,6 +93,12 @@ const weekId = () => {
   d.setDate(d.getDate() - day);
   return d.toISOString().slice(0, 10);
 };
+const prevWeekId = () => {
+  const d = new Date();
+  const day = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - day - 7);
+  return d.toISOString().slice(0, 10);
+};
 const fmtDate = (iso) => {
   const d = new Date(iso + "T12:00:00");
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -108,6 +114,13 @@ const copingLine = (o) => {
     : cThen ? `If stuck → then ${cThen}`
     : null;
 };
+
+/* campaign progress rolls up: subtask → task → milestone → campaign */
+const taskDone = (t) => (t.subtasks && t.subtasks.length ? t.subtasks.every((s) => s.done) : !!t.done);
+const milestoneFrac = (m) =>
+  m.claimedAt ? 1 : m.tasks.length ? m.tasks.filter(taskDone).length / m.tasks.length : 0;
+const campaignFrac = (c) =>
+  c.milestones.length ? c.milestones.reduce((a, m) => a + milestoneFrac(m), 0) / c.milestones.length : 0;
 
 /* goal review is due monthly once the board has quests old enough to drift */
 const REVIEW_EVERY_DAYS = 30;
@@ -141,6 +154,7 @@ const ACHIEVEMENTS = [
   { id: "xp-1000", icon: "❂", name: "Thousand Deeds", desc: "Earn 1,000 total XP", check: (s) => s.player.xp >= 1000 },
   { id: "vitals-10", icon: "♥", name: "Know Thyself", desc: "Log 10 tracker entries", check: (s) => s.trackers.reduce((n, t) => n + t.entries.length, 0) >= 10 },
   { id: "review-1", icon: "⚖", name: "Strategist", desc: "Complete a goal review", check: (s) => countType(s, "review") >= 1 },
+  { id: "weekly-4", icon: "✶", name: "Steadfast", desc: "Hold a 4-week quota streak", check: (s) => (s.weeklies || []).some((w) => w.streak >= 4) },
   { id: "shop-1", icon: "⚜", name: "Treat Yourself", desc: "Redeem a reward", check: (s) => countType(s, "purchase") >= 1 },
   { id: "gold-500", icon: "♚", name: "Dragon's Hoard", desc: "Hold 500 gold at once", check: (s) => (s.player.gold || 0) >= 500 },
 ];
@@ -155,7 +169,7 @@ const seedState = () => ({
       id: uid(),
       title: "Learn Guitar",
       tier: "main",
-      skillId: null,
+      skillIds: [],
       passion: true,
       subtasks: [
         { id: uid(), text: "Learn basic open chords", xp: 30, type: "check", done: false },
@@ -169,7 +183,7 @@ const seedState = () => ({
       id: uid(),
       title: "Land the Next Role",
       tier: "epic",
-      skillId: null,
+      skillIds: [],
       passion: false,
       subtasks: [
         { id: uid(), text: "Application submitted", xp: 10, type: "tally", count: 0 },
@@ -178,7 +192,9 @@ const seedState = () => ({
       createdAt: todayStr(),
     },
   ],
-  dailies: [{ id: uid(), name: "Practice guitar", xp: 15, lastDone: null, cue: "After dinner, 15 minutes", copingIf: "I'm too tired after dinner", copingThen: "play one song, badly", passion: true }],
+  dailies: [{ id: uid(), name: "Practice guitar", xp: 15, lastDone: null, cue: "After dinner, 15 minutes", copingIf: "I'm too tired after dinner", copingThen: "play one song, badly", passion: true, skillIds: [] }],
+  weeklies: [],
+  campaigns: [],
   boss: null,
   achievements: [],
   skills: [{ id: uid(), name: "Guitar", xp: 0, kind: "discipline", abilities: ["dex"], logs: [], passion: true, totalSessions: 0, milestone: null, lastMilestoneLevel: 0 }],
@@ -198,14 +214,29 @@ const migrate = (s) => ({
   player: { gold: 0, freezes: 0, ...(s.player || {}) },
   abilities: { ...zeroAbilities(), ...(s.abilities || {}) },
   quests: (s.quests || []).map((q) => ({
-    skillId: null,
     passion: false,
     copingIf: "",
     copingThen: "",
     ...q,
+    skillIds: q.skillIds || (q.skillId ? [q.skillId] : []),
     subtasks: (q.subtasks || []).map((st) => ({ type: "check", count: 0, ...st })),
   })),
-  dailies: (s.dailies || []).map((d) => ({ cue: "", passion: false, copingIf: "", copingThen: "", ...d })),
+  dailies: (s.dailies || []).map((d) => ({ cue: "", passion: false, copingIf: "", copingThen: "", skillIds: [], ...d })),
+  weeklies: (s.weeklies || []).map((w) => ({ skillIds: [], copingIf: "", copingThen: "", campaignId: null, ...w })),
+  campaigns: (s.campaigns || []).map((c) => ({
+    sequential: false,
+    ...c,
+    milestones: (c.milestones || []).map((m) => ({
+      xp: 100,
+      claimedAt: null,
+      ...m,
+      tasks: (m.tasks || []).map((t) => ({
+        done: false,
+        ...t,
+        subtasks: (t.subtasks || []).map((st) => ({ done: false, ...st })),
+      })),
+    })),
+  })),
   boss: s.boss ? { req: null, ...s.boss } : null,
   achievements: s.achievements || [],
   skills: (s.skills || []).map((k) => ({
@@ -261,6 +292,36 @@ function applySkillGain(s, skillId, xp, label, countSession = true) {
       logs: [{ date: todayStr(), xp, label }, ...k.logs].slice(0, 120),
     }),
   };
+}
+
+/* shared daily/weekly completion — used by the Quests tab and campaign Commitments */
+function completeDaily(setState, grantXp, d) {
+  const today = todayStr();
+  if (d.lastDone === today) return;
+  setState((s) => {
+    let next = { ...s, dailies: s.dailies.map((x) => (x.id === d.id ? { ...x, lastDone: today } : x)) };
+    (d.skillIds || []).forEach((sid) => { next = applySkillGain(next, sid, d.xp, "Daily", true); });
+    return next;
+  });
+  grantXp(d.xp, `Daily: ${d.name}`, { noGold: d.passion });
+}
+
+function weeklyRep(setState, grantXp, w) {
+  const newCount = w.count + 1;
+  const reached = newCount === w.target;
+  setState((s) => {
+    let next = {
+      ...s,
+      weeklies: s.weeklies.map((x) => (x.id !== w.id ? x : { ...x, count: newCount, streak: reached ? x.streak + 1 : x.streak })),
+    };
+    (w.skillIds || []).forEach((sid) => { next = applySkillGain(next, sid, w.xp, "Weekly", false); });
+    return next;
+  });
+  grantXp(
+    reached ? w.xp * 3 : w.xp,
+    reached ? `Weekly target met: ${w.name} (${newCount}/${w.target}) — ${w.streak + 1} wk streak` : `Weekly: ${w.name} (${newCount}/${w.target})`,
+    { noGold: w.passion }
+  );
 }
 
 /* ── persistence: Supabase + local cache ── */
@@ -478,6 +539,24 @@ function LifeQuest({ userId, onSignOut }) {
     }
   }, [state]);
 
+  /* weekly quest rollover — new week: reset counts, keep streak only if the
+     just-ended week hit its target and no week was skipped in between */
+  useEffect(() => {
+    if (!state || !(state.weeklies || []).length) return;
+    const cur = weekId();
+    if (state.weeklies.every((w) => w.weekId === cur)) return;
+    const prev = prevWeekId();
+    setState((s) => ({
+      ...s,
+      weeklies: s.weeklies.map((w) => w.weekId === cur ? w : {
+        ...w,
+        streak: w.count >= w.target && w.weekId === prev ? w.streak : 0,
+        count: 0,
+        weekId: cur,
+      }),
+    }));
+  }, [state]);
+
   /* achievements */
   useEffect(() => {
     if (!state) return;
@@ -569,6 +648,7 @@ function LifeQuest({ userId, onSignOut }) {
 
       {tab === "character" && <CharacterView state={state} setState={setState} lvl={lvl} title={title} onSignOut={onSignOut} />}
       {tab === "quests" && <QuestsView state={state} setState={setState} grantXp={grantXp} />}
+      {tab === "campaigns" && <CampaignsView state={state} setState={setState} grantXp={grantXp} />}
       {tab === "skills" && <SkillsView state={state} setState={setState} grantXp={grantXp} />}
       {tab === "trackers" && <TrackersView state={state} setState={setState} showToast={showToast} />}
       {tab === "shop" && <ShopView state={state} setState={setState} showToast={showToast} />}
@@ -680,6 +760,52 @@ function AbilityPicker({ selected, onChange }) {
       </div>
       <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>
         Tap up to two. Primary earns 50% of skill XP, secondary 25%.
+      </div>
+    </div>
+  );
+}
+
+/* multi-select skill chips — quests/dailies/weeklies can feed up to 3 skills */
+function SkillPicker({ skills, selected, onChange, label = "Feeds skills (optional) — all its XP also trains them" }) {
+  if (!skills.length) return null;
+  const toggle = (id) => {
+    if (selected.includes(id)) onChange(selected.filter((x) => x !== id));
+    else if (selected.length < 3) onChange([...selected, id]);
+  };
+  return (
+    <div style={{ margin: "10px 0 4px" }}>
+      <div style={{ fontSize: 12, color: C.dim, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {skills.map((k) => {
+          const on = selected.includes(k.id);
+          return (
+            <button key={k.id} onClick={() => toggle(k.id)}
+              style={{ padding: "6px 10px", borderRadius: 999, fontSize: 12, border: `1px solid ${on ? C.arcane : C.line}`, background: on ? `${C.arcane}22` : "transparent", color: on ? C.arcane : C.dim }}>
+              {k.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* single-select campaign chip — tags a daily/weekly as a campaign commitment */
+function CampaignPicker({ campaigns, selected, onChange }) {
+  if (!campaigns || !campaigns.length) return null;
+  return (
+    <div style={{ margin: "8px 0 0" }}>
+      <div style={{ fontSize: 12, color: C.dim, marginBottom: 6 }}>Part of a campaign (optional)</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {campaigns.map((c) => {
+          const on = selected === c.id;
+          return (
+            <button key={c.id} onClick={() => onChange(on ? null : c.id)}
+              style={{ padding: "6px 10px", borderRadius: 999, fontSize: 12, border: `1px solid ${on ? C.gold : C.line}`, background: on ? `${C.gold}22` : "transparent", color: on ? C.gold : C.dim }}>
+              ⚐ {c.title}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -817,6 +943,8 @@ function SageSection({ state, setState }) {
         deedsThisWeek: week.map((e) => `${e.date}: ${e.text}${e.xp ? ` (+${e.xp} XP)` : ""}`),
         skills: state.skills.map((k) => `${k.name} — Level ${skillLevel(k.xp)}, ${k.totalSessions || 0} total sessions, passion: ${!!k.passion}`),
         activeQuests: state.quests.map((q) => q.title),
+        weeklies: (state.weeklies || []).map((w) => `${w.name}: ${w.count}/${w.target} this week, ${w.streak} week streak`),
+        campaigns: (state.campaigns || []).map((c) => `${c.title} — ${Math.round(campaignFrac(c) * 100)}% (${c.milestones.filter((m) => m.claimedAt).length}/${c.milestones.length} milestones claimed)`),
         vitals: state.trackers.map((t) => `${t.name}: ${t.entries[0] ? t.entries[0].value + " " + t.unit : "no entries"}`),
       };
       const text = await askClaude({
@@ -864,7 +992,8 @@ function QuestsView({ state, setState, grantXp }) {
   const [confirmEditId, setConfirmEditId] = useState(null);
   const [editId, setEditId] = useState(null);
 
-  const withSkillFeed = (base, q, xp) => q.skillId ? applySkillGain(base, q.skillId, xp, "Quest", false) : base;
+  const withSkillFeed = (base, q, xp) =>
+    (q.skillIds || []).reduce((acc, sid) => applySkillGain(acc, sid, xp, "Quest", false), base);
 
   const toggleSub = (qid, sid) => {
     const q = state.quests.find((x) => x.id === qid);
@@ -913,6 +1042,7 @@ function QuestsView({ state, setState, grantXp }) {
     <div style={{ maxWidth: 560, margin: "0 auto", padding: "24px 16px" }}>
       <GoalReviewSection state={state} setState={setState} grantXp={grantXp} />
       <DailiesSection state={state} setState={setState} grantXp={grantXp} />
+      <WeekliesSection state={state} setState={setState} grantXp={grantXp} />
       <BossSection state={state} setState={setState} grantXp={grantXp} />
 
       <SectionTitle right={<GhostBtn onClick={() => setAdding((a) => !a)}>{adding ? "Close" : "+ New quest"}</GhostBtn>}>
@@ -962,7 +1092,7 @@ function QuestsView({ state, setState, grantXp }) {
         const checks = q.subtasks.filter((s) => s.type !== "tally");
         const done = checks.filter((s) => s.done).length;
         const claimable = checks.length === 0 || done === checks.length;
-        const linkedSkill = q.skillId ? state.skills.find((k) => k.id === q.skillId) : null;
+        const linkedSkills = (q.skillIds || []).map((id) => state.skills.find((k) => k.id === id)).filter(Boolean);
         return (
           <Card key={q.id} style={{ marginBottom: 14, borderLeft: `3px solid ${tier.color}`, animation: "rise .3s ease" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
@@ -970,7 +1100,7 @@ function QuestsView({ state, setState, grantXp }) {
               <div style={{ fontSize: 11, color: tier.color, letterSpacing: ".12em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{tier.label}</div>
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
-              {linkedSkill && <span style={{ fontSize: 11, color: C.arcane }}>Feeds skill: {linkedSkill.name}</span>}
+              {linkedSkills.length > 0 && <span style={{ fontSize: 11, color: C.arcane }}>Feeds: {linkedSkills.map((k) => k.name).join(", ")}</span>}
               {q.passion && <span style={{ fontSize: 11, color: C.ember }}>♥ passion — XP only</span>}
               {copingLine(q) && <span style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>⛨ {copingLine(q)}</span>}
             </div>
@@ -1118,7 +1248,7 @@ function GoalReviewSection({ state, setState, grantXp }) {
         <div style={{ marginTop: 12 }}>
           <input style={inp} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Quest name" />
           <div style={{ display: "flex", gap: 6, margin: "8px 0 10px" }}>
-            {Object.entries(TIERS).map(([k, t]) => (
+            {Object.entries(TIERS).filter(([k]) => k !== "epic" || q.tier === "epic").map(([k, t]) => (
               <button key={k} onClick={() => setTier(k)}
                 style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, border: `1px solid ${tier === k ? t.color : C.line}`, background: tier === k ? `${t.color}22` : "transparent", color: tier === k ? t.color : C.dim }}>
                 {t.label}
@@ -1152,19 +1282,17 @@ function DailiesSection({ state, setState, grantXp }) {
   const [copingThen, setCopingThen] = useState("");
   const [xp, setXp] = useState(15);
   const [passion, setPassion] = useState(false);
+  const [skillIds, setSkillIds] = useState([]);
+  const [campaignId, setCampaignId] = useState(null);
   const today = todayStr();
   const doneCount = state.dailies.filter((d) => d.lastDone === today).length;
 
-  const complete = (d) => {
-    if (d.lastDone === today) return;
-    setState((s) => ({ ...s, dailies: s.dailies.map((x) => x.id === d.id ? { ...x, lastDone: today } : x) }));
-    grantXp(d.xp, `Daily: ${d.name}`, { noGold: d.passion });
-  };
+  const complete = (d) => completeDaily(setState, grantXp, d);
 
   const add = () => {
     if (!name.trim()) return;
-    setState((s) => ({ ...s, dailies: [...s.dailies, { id: uid(), name: name.trim(), cue: cue.trim(), copingIf: copingIf.trim(), copingThen: copingThen.trim(), xp: Math.max(5, Number(xp) || 15), lastDone: null, passion }] }));
-    setName(""); setCue(""); setCopingIf(""); setCopingThen(""); setXp(15); setPassion(false); setAdding(false);
+    setState((s) => ({ ...s, dailies: [...s.dailies, { id: uid(), name: name.trim(), cue: cue.trim(), copingIf: copingIf.trim(), copingThen: copingThen.trim(), xp: Math.max(5, Number(xp) || 15), lastDone: null, passion, skillIds, campaignId }] }));
+    setName(""); setCue(""); setCopingIf(""); setCopingThen(""); setXp(15); setPassion(false); setSkillIds([]); setCampaignId(null); setAdding(false);
   };
 
   const remove = (id) => setState((s) => ({ ...s, dailies: s.dailies.filter((x) => x.id !== id) }));
@@ -1187,7 +1315,9 @@ function DailiesSection({ state, setState, grantXp }) {
             <input style={{ ...inp, flex: 1 }} placeholder="If I get stuck… (optional) — e.g. too tired after work" value={copingIf} onChange={(e) => setCopingIf(e.target.value)} />
             <input style={{ ...inp, flex: 1 }} placeholder="…then I'll — e.g. do just 5 minutes" value={copingThen} onChange={(e) => setCopingThen(e.target.value)} />
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <SkillPicker skills={state.skills} selected={skillIds} onChange={setSkillIds} label="Feeds skills (optional) — each check-off trains them" />
+          <CampaignPicker campaigns={state.campaigns} selected={campaignId} onChange={setCampaignId} />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
             <PassionToggle on={passion} onToggle={() => setPassion((p) => !p)} />
             <GhostBtn color={C.moss} onClick={add} style={{ flex: 1 }}>Add daily</GhostBtn>
           </div>
@@ -1214,6 +1344,14 @@ function DailiesSection({ state, setState, grantXp }) {
                   </span>
                   {d.cue && <div style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>{d.cue}</div>}
                   {copingLine(d) && <div style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>⛨ {copingLine(d)}</div>}
+                  {(d.skillIds || []).length > 0 && (
+                    <div style={{ fontSize: 11, color: C.arcane }}>
+                      → feeds {(d.skillIds || []).map((id) => (state.skills.find((k) => k.id === id) || {}).name).filter(Boolean).join(", ")}
+                    </div>
+                  )}
+                  {d.campaignId && ((state.campaigns || []).find((c) => c.id === d.campaignId) || null) && (
+                    <div style={{ fontSize: 11, color: C.gold }}>⚐ {(state.campaigns || []).find((c) => c.id === d.campaignId).title}</div>
+                  )}
                 </div>
                 <span style={{ fontSize: 12, color: done ? C.dim : C.moss }}>+{d.xp}</span>
                 <button onClick={() => remove(d.id)} style={{ background: "none", border: "none", color: C.dim, fontSize: 13, padding: "0 2px" }} aria-label={`Remove ${d.name}`}>×</button>
@@ -1223,6 +1361,108 @@ function DailiesSection({ state, setState, grantXp }) {
         </Card>
       )}
       <div style={{ fontSize: 11, color: C.dim, margin: "2px 4px 0" }}>Dailies reset at midnight. ♥ = passion, earns XP only.</div>
+    </>
+  );
+}
+
+/* ── Weekly quests: "do this N times per week" — days flex, count matters ── */
+function WeekliesSection({ state, setState, grantXp }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [xp, setXp] = useState(15);
+  const [target, setTarget] = useState(3);
+  const [passion, setPassion] = useState(false);
+  const [copingIf, setCopingIf] = useState("");
+  const [copingThen, setCopingThen] = useState("");
+  const [skillIds, setSkillIds] = useState([]);
+
+  const [campaignId, setCampaignId] = useState(null);
+  const weeklies = state.weeklies || [];
+  const hitCount = weeklies.filter((w) => w.count >= w.target).length;
+
+  const rep = (w) => weeklyRep(setState, grantXp, w);
+
+  const add = () => {
+    if (!name.trim()) return;
+    setState((s) => ({
+      ...s,
+      weeklies: [...(s.weeklies || []), {
+        id: uid(), name: name.trim(), xp: Math.max(5, Number(xp) || 15), target: Math.max(1, Number(target) || 3),
+        count: 0, weekId: weekId(), streak: 0, passion,
+        copingIf: copingIf.trim(), copingThen: copingThen.trim(), skillIds, campaignId,
+      }],
+    }));
+    setName(""); setXp(15); setTarget(3); setPassion(false); setCopingIf(""); setCopingThen(""); setSkillIds([]); setCampaignId(null); setAdding(false);
+  };
+
+  const remove = (id) => setState((s) => ({ ...s, weeklies: s.weeklies.filter((x) => x.id !== id) }));
+
+  const inp = { background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 };
+
+  return (
+    <>
+      <SectionTitle right={<GhostBtn onClick={() => setAdding((a) => !a)}>{adding ? "Close" : "+ Weekly"}</GhostBtn>}>
+        Weekly Quests{weeklies.length > 0 ? ` · ${hitCount}/${weeklies.length}` : ""}
+      </SectionTitle>
+      {adding && (
+        <Card style={{ marginBottom: 10, background: C.surface2 }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+            <input style={{ ...inp, flex: 1 }} placeholder="Weekly quest — e.g. Gym session" value={name} onChange={(e) => setName(e.target.value)} />
+            <input style={{ ...inp, width: 58 }} type="number" min="1" value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Times per week" title="Times per week" />
+            <input style={{ ...inp, width: 64 }} type="number" min="5" value={xp} onChange={(e) => setXp(e.target.value)} aria-label="XP per rep" title="XP per rep" />
+          </div>
+          <div style={{ fontSize: 11, color: C.dim, margin: "0 0 8px" }}>name · times per week · XP per rep</div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            <input style={{ ...inp, flex: 1 }} placeholder="If I get stuck… (optional)" value={copingIf} onChange={(e) => setCopingIf(e.target.value)} />
+            <input style={{ ...inp, flex: 1 }} placeholder="…then I'll" value={copingThen} onChange={(e) => setCopingThen(e.target.value)} />
+          </div>
+          <SkillPicker skills={state.skills} selected={skillIds} onChange={setSkillIds} label="Feeds skills (optional) — each rep trains them" />
+          <CampaignPicker campaigns={state.campaigns} selected={campaignId} onChange={setCampaignId} />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+            <PassionToggle on={passion} onToggle={() => setPassion((p) => !p)} />
+            <GhostBtn onClick={add} style={{ flex: 1 }}>Add weekly</GhostBtn>
+          </div>
+          <div style={{ fontSize: 11, color: C.dim, marginTop: 8 }}>
+            Only the weekly count matters — the days flex. The rep that hits the target pays triple, and hitting it week after week builds a streak.
+          </div>
+        </Card>
+      )}
+      {weeklies.length === 0 && !adding && <Empty>No weekly quests. Add the "N times a week" habits — gym, German, deep work.</Empty>}
+      {weeklies.length > 0 && (
+        <Card style={{ marginBottom: 6, borderLeft: `3px solid ${C.gold}`, padding: "8px 14px" }}>
+          {weeklies.map((w) => {
+            const hit = w.count >= w.target;
+            return (
+              <div key={w.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.line}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: 14, color: hit ? C.dim : C.parchment }}>
+                      {w.name}{w.passion ? <span style={{ color: C.ember }}> ♥</span> : null}
+                      {w.streak > 0 && <span style={{ fontSize: 11, color: C.gold, marginLeft: 8 }}>✶ {w.streak} wk streak</span>}
+                    </span>
+                    {copingLine(w) && <div style={{ fontSize: 11, color: C.dim, fontStyle: "italic" }}>⛨ {copingLine(w)}</div>}
+                    {(w.skillIds || []).length > 0 && (
+                      <div style={{ fontSize: 11, color: C.arcane }}>
+                        → feeds {(w.skillIds || []).map((id) => (state.skills.find((k) => k.id === id) || {}).name).filter(Boolean).join(", ")}
+                      </div>
+                    )}
+                    {w.campaignId && ((state.campaigns || []).find((c) => c.id === w.campaignId) || null) && (
+                      <div style={{ fontSize: 11, color: C.gold }}>⚐ {(state.campaigns || []).find((c) => c.id === w.campaignId).title}</div>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 12, color: hit ? C.moss : C.dim, whiteSpace: "nowrap" }}>{w.count}/{w.target}{hit ? " ✓" : ""}</span>
+                  <GhostBtn color={C.gold} onClick={() => rep(w)} style={{ padding: "5px 12px", fontSize: 13 }}>+1</GhostBtn>
+                  <button onClick={() => remove(w.id)} style={{ background: "none", border: "none", color: C.dim, fontSize: 13, padding: "0 2px" }} aria-label={`Remove ${w.name}`}>×</button>
+                </div>
+                <div style={{ marginTop: 6 }}><Bar frac={w.count / w.target} color={hit ? C.moss : C.gold} height={5} /></div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+      {weeklies.length > 0 && (
+        <div style={{ fontSize: 11, color: C.dim, margin: "2px 4px 0" }}>Counts reset each Monday. Hit the target to keep the ✶ streak alive.</div>
+      )}
     </>
   );
 }
@@ -1332,7 +1572,7 @@ function BossSection({ state, setState, grantXp }) {
 function QuestForm({ skills, onCreate }) {
   const [title, setTitle] = useState("");
   const [tier, setTier] = useState("side");
-  const [skillId, setSkillId] = useState(null);
+  const [skillIds, setSkillIds] = useState([]);
   const [passion, setPassion] = useState(false);
   const [notes, setNotes] = useState("");
   const [copingIf, setCopingIf] = useState("");
@@ -1348,13 +1588,13 @@ function QuestForm({ skills, onCreate }) {
     setAiBusy(true); setAiErr(null);
     try {
       const out = await askClaudeJSON({
-        system: 'You design quests for a personal life-RPG. Given a real-life goal, return ONLY valid JSON, no markdown fences, no preamble: {"tier":"side|main|epic","subtasks":[{"text":"...","xp":number,"type":"check|tally"}]}. Rules: 3-6 subtasks; "check" for one-time steps, "tally" for repeatable countable actions (e.g. "Application submitted"); xp between 10-100 scaled to effort; tier reflects overall scope (side=days, main=weeks, epic=months). Subtask text under 60 characters, concrete and verifiable. If the user provides additional context (their current level, constraints, or what done looks like), use it to calibrate the difficulty and specificity of the subtasks to their situation.',
+        system: 'You design quests for a personal life-RPG. Given a real-life goal, return ONLY valid JSON, no markdown fences, no preamble: {"tier":"side|main","subtasks":[{"text":"...","xp":number,"type":"check|tally"}]}. Rules: 3-6 subtasks; "check" for one-time steps, "tally" for repeatable countable actions (e.g. "Application submitted"); xp between 10-100 scaled to effort; tier reflects overall scope (side=days, main=weeks or a few months at most). Subtask text under 60 characters, concrete and verifiable. If the user provides additional context (their current level, constraints, or what done looks like), use it to calibrate the difficulty and specificity of the subtasks to their situation.',
         prompt: notes.trim()
           ? `Goal: ${title.trim()}\nAdditional context from the user: ${notes.trim()}`
           : `Goal: ${title.trim()}`,
         maxTokens: 500,
       });
-      if (out.tier && TIERS[out.tier]) setTier(out.tier);
+      if (out.tier && TIERS[out.tier] && out.tier !== "epic") setTier(out.tier);
       if (Array.isArray(out.subtasks) && out.subtasks.length) {
         setSubs(out.subtasks.slice(0, 6).map((s) => ({
           id: uid(),
@@ -1373,7 +1613,7 @@ function QuestForm({ skills, onCreate }) {
     const cleaned = subs.filter((s) => s.text.trim());
     if (!title.trim() || cleaned.length === 0) return;
     onCreate({
-      id: uid(), title: title.trim(), tier, skillId, passion, createdAt: todayStr(),
+      id: uid(), title: title.trim(), tier, skillIds, passion, createdAt: todayStr(),
       copingIf: copingIf.trim(), copingThen: copingThen.trim(),
       subtasks: cleaned.map((s) => ({
         id: s.id, text: s.text.trim(), xp: Math.max(5, Number(s.xp) || 20),
@@ -1401,12 +1641,15 @@ function QuestForm({ skills, onCreate }) {
       {aiErr && <div style={{ color: C.ember, fontSize: 12, marginBottom: 8, lineHeight: 1.5 }}>{aiErr}</div>}
 
       <div style={{ display: "flex", gap: 6, margin: "2px 0 10px" }}>
-        {Object.entries(TIERS).map(([k, t]) => (
+        {Object.entries(TIERS).filter(([k]) => k !== "epic").map(([k, t]) => (
           <button key={k} onClick={() => setTier(k)}
             style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 12, border: `1px solid ${tier === k ? t.color : C.line}`, background: tier === k ? `${t.color}22` : "transparent", color: tier === k ? t.color : C.dim }}>
             {t.label}
           </button>
         ))}
+      </div>
+      <div style={{ fontSize: 11, color: C.dim, margin: "-4px 0 10px" }}>
+        Goals measured in months belong in a ⚐ Campaign now — epics have retired.
       </div>
 
       <div style={{ display: "flex", gap: 6, margin: "0 0 10px" }}>
@@ -1436,19 +1679,7 @@ function QuestForm({ skills, onCreate }) {
         </div>
       ))}
 
-      {skills.length > 0 && (
-        <div style={{ margin: "10px 0 4px" }}>
-          <div style={{ fontSize: 12, color: C.dim, marginBottom: 6 }}>Feeds a skill (optional) — all quest XP also trains it</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {skills.map((k) => (
-              <button key={k.id} onClick={() => setSkillId(skillId === k.id ? null : k.id)}
-                style={{ padding: "6px 10px", borderRadius: 999, fontSize: 12, border: `1px solid ${skillId === k.id ? C.arcane : C.line}`, background: skillId === k.id ? `${C.arcane}22` : "transparent", color: skillId === k.id ? C.arcane : C.dim }}>
-                {k.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      <SkillPicker skills={skills} selected={skillIds} onChange={setSkillIds} />
 
       <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
         <GhostBtn color={C.dim} onClick={() => setSubs((ss) => [...ss, { id: uid(), text: "", xp: 20, type: "check" }])}>+ Objective</GhostBtn>
@@ -1516,6 +1747,293 @@ function QuestEditor({ q, onSave, onCancel }) {
   );
 }
 
+/* ── Campaigns: months-long goals — milestones mark the road ── */
+function CampaignsView({ state, setState, grantXp }) {
+  const [title, setTitle] = useState("");
+  const [sequential, setSequential] = useState(true);
+  const [confirmAbandon, setConfirmAbandon] = useState(null);
+  const campaigns = state.campaigns || [];
+
+  const inp = { background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "10px 12px", fontSize: 14 };
+
+  const found = () => {
+    if (!title.trim()) return;
+    setState((s) => ({
+      ...s,
+      campaigns: [...(s.campaigns || []), { id: uid(), title: title.trim(), createdAt: todayStr(), sequential, milestones: [] }],
+    }));
+    setTitle(""); setSequential(true);
+  };
+
+  const patchCampaign = (cid, fn) =>
+    setState((s) => ({ ...s, campaigns: s.campaigns.map((c) => (c.id === cid ? fn(c) : c)) }));
+
+  const claim = (c, m) => {
+    setState((s) => ({
+      ...s,
+      campaigns: s.campaigns.map((cc) => cc.id !== c.id ? cc : {
+        ...cc,
+        milestones: cc.milestones.map((mm) => (mm.id === m.id ? { ...mm, claimedAt: todayStr() } : mm)),
+      }),
+      chronicle: [{ id: uid(), date: todayStr(), text: `Milestone claimed — ${c.title}: ${m.title}`, xp: m.xp, type: "milestone" }, ...s.chronicle],
+    }));
+    grantXp(m.xp, `Milestone: ${m.title}`);
+  };
+
+  const abandon = (cid) => {
+    const c = campaigns.find((x) => x.id === cid);
+    setState((s) => ({
+      ...s,
+      campaigns: s.campaigns.filter((x) => x.id !== cid),
+      chronicle: [{ id: uid(), date: todayStr(), text: `Campaign closed — ${c.title}`, xp: 0, type: "note" }, ...s.chronicle],
+    }));
+    setConfirmAbandon(null);
+  };
+
+  return (
+    <div style={{ maxWidth: 560, margin: "0 auto", padding: "24px 16px" }}>
+      <SectionTitle>Campaigns</SectionTitle>
+      <div style={{ fontSize: 12, color: C.dim, margin: "0 2px 10px", lineHeight: 1.5 }}>
+        A campaign is one big goal measured in months. Milestones mark the road; the commitments you tag to it keep the pace.
+      </div>
+      <Card style={{ marginBottom: 16, background: C.surface2 }}>
+        <input style={{ ...inp, width: "100%", marginBottom: 8 }} placeholder="Campaign — e.g. Germany Prep" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={() => setSequential((x) => !x)}
+            style={{ background: sequential ? `${C.arcane}22` : "transparent", border: `1px solid ${sequential ? C.arcane : C.line}`, color: sequential ? C.arcane : C.dim, borderRadius: 999, padding: "6px 12px", fontSize: 12 }}>
+            {sequential ? "⛓ Milestones unlock in order" : "Milestones all open"}
+          </button>
+          <GhostBtn onClick={found} style={{ flex: 1 }}>Found campaign</GhostBtn>
+        </div>
+      </Card>
+
+      {campaigns.length === 0 && <Empty>No campaigns yet — found one for a goal measured in months, not weeks.</Empty>}
+      {campaigns.map((c) => (
+        <CampaignCard key={c.id} c={c}
+          dailies={state.dailies.filter((d) => d.campaignId === c.id)}
+          weeklies={(state.weeklies || []).filter((w) => w.campaignId === c.id)}
+          onCompleteDaily={(d) => completeDaily(setState, grantXp, d)}
+          onWeeklyRep={(w) => weeklyRep(setState, grantXp, w)}
+          onPatch={(fn) => patchCampaign(c.id, fn)}
+          onClaim={(m) => claim(c, m)}
+          onAbandon={() => setConfirmAbandon(c.id)}
+        />
+      ))}
+
+      {confirmAbandon && (
+        <Modal onClose={() => setConfirmAbandon(null)}>
+          <Card style={{ borderLeft: `3px solid ${C.ember}`, background: C.surface2 }}>
+            <div className="display" style={{ fontSize: 15, fontWeight: 700, color: C.ember, marginBottom: 8 }}>Close this campaign?</div>
+            <div style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 14 }}>
+              Its milestones, tasks, and progress will be removed. Claimed rewards and chronicle entries stay yours. Commitments tagged to it survive as ordinary quests.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => abandon(confirmAbandon)}
+                style={{ flex: 1, background: C.ember, color: C.bg, border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 13 }}>
+                Close campaign
+              </button>
+              <GhostBtn color={C.dim} onClick={() => setConfirmAbandon(null)}>Cancel</GhostBtn>
+            </div>
+          </Card>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function CampaignCard({ c, dailies, weeklies, onCompleteDaily, onWeeklyRep, onPatch, onClaim, onAbandon }) {
+  const [mTitle, setMTitle] = useState("");
+  const [mXp, setMXp] = useState(100);
+  const frac = campaignFrac(c);
+  const inp = { background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "9px 11px", fontSize: 13 };
+
+  const addMilestone = () => {
+    if (!mTitle.trim()) return;
+    onPatch((cc) => ({
+      ...cc,
+      milestones: [...cc.milestones, { id: uid(), title: mTitle.trim(), xp: Math.max(10, Number(mXp) || 100), claimedAt: null, tasks: [] }],
+    }));
+    setMTitle(""); setMXp(100);
+  };
+
+  return (
+    <Card style={{ marginBottom: 16, borderLeft: `3px solid ${C.gold}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+        <div className="display" style={{ fontSize: 18, fontWeight: 700 }}>⚐ {c.title}</div>
+        <span className="display" style={{ fontSize: 15, fontWeight: 700, color: C.gold, whiteSpace: "nowrap" }}>{Math.round(frac * 100)}%</span>
+      </div>
+      <div style={{ margin: "10px 0 4px" }}><Bar frac={frac} color={C.gold} /></div>
+      <div style={{ fontSize: 11, color: C.dim, marginBottom: 6 }}>
+        {c.sequential ? "⛓ milestones unlock in order" : "all milestones open"} · founded {fmtDate(c.createdAt)}
+      </div>
+
+      {c.milestones.map((m, i) => (
+        <MilestoneBlock key={m.id} m={m}
+          locked={c.sequential && c.milestones.slice(0, i).some((x) => !x.claimedAt)}
+          onPatch={(fn) => onPatch((cc) => ({ ...cc, milestones: cc.milestones.map((mm) => (mm.id === m.id ? fn(mm) : mm)) }))}
+          onRemove={() => onPatch((cc) => ({ ...cc, milestones: cc.milestones.filter((mm) => mm.id !== m.id) }))}
+          onClaim={() => onClaim(m)}
+        />
+      ))}
+
+      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+        <input style={{ ...inp, flex: 1 }} placeholder="New milestone — e.g. Python foundations" value={mTitle} onChange={(e) => setMTitle(e.target.value)} />
+        <input style={{ ...inp, width: 64 }} type="number" min="10" value={mXp} onChange={(e) => setMXp(e.target.value)} aria-label="Milestone XP reward" title="XP reward" />
+        <GhostBtn onClick={addMilestone}>+ Milestone</GhostBtn>
+      </div>
+
+      {(dailies.length > 0 || weeklies.length > 0) && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 11, color: C.moss, letterSpacing: ".14em", textTransform: "uppercase", marginBottom: 4 }}>Commitments</div>
+          {dailies.map((d) => {
+            const done = d.lastDone === todayStr();
+            return (
+              <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.line}` }}>
+                <button onClick={() => onCompleteDaily(d)} aria-label={`Complete ${d.name}`}
+                  style={{ width: 18, height: 18, borderRadius: 999, flexShrink: 0, border: `1.5px solid ${done ? C.moss : C.dim}`, background: done ? C.moss : "transparent", color: C.bg, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {done ? "✓" : ""}
+                </button>
+                <span style={{ flex: 1, fontSize: 13, color: done ? C.dim : C.parchment, textDecoration: done ? "line-through" : "none" }}>
+                  {d.name}{d.passion ? <span style={{ color: C.ember }}> ♥</span> : null}
+                </span>
+                <span style={{ fontSize: 11, color: C.dim }}>daily · +{d.xp}</span>
+              </div>
+            );
+          })}
+          {weeklies.map((w) => {
+            const hit = w.count >= w.target;
+            return (
+              <div key={w.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.line}` }}>
+                <span style={{ flex: 1, fontSize: 13, color: hit ? C.dim : C.parchment }}>
+                  {w.name}{w.passion ? <span style={{ color: C.ember }}> ♥</span> : null}
+                  {w.streak > 0 && <span style={{ fontSize: 11, color: C.gold, marginLeft: 7 }}>✶ {w.streak} wk</span>}
+                </span>
+                <span style={{ fontSize: 11, color: hit ? C.moss : C.dim, whiteSpace: "nowrap" }}>{w.count}/{w.target}{hit ? " ✓" : ""}</span>
+                <GhostBtn color={C.gold} onClick={() => onWeeklyRep(w)} style={{ padding: "3px 10px", fontSize: 12 }}>+1</GhostBtn>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{ textAlign: "right", marginTop: 8 }}>
+        <button onClick={onAbandon} style={{ background: "none", border: "none", color: C.dim, fontSize: 11, textDecoration: "underline" }}>close campaign</button>
+      </div>
+    </Card>
+  );
+}
+
+function MilestoneBlock({ m, locked, onPatch, onRemove, onClaim }) {
+  const [taskText, setTaskText] = useState("");
+  const [subFor, setSubFor] = useState(null);
+  const [subText, setSubText] = useState("");
+  const frac = milestoneFrac(m);
+  const claimable = !locked && !m.claimedAt && (m.tasks.length === 0 || m.tasks.every(taskDone));
+  const inp = { background: C.bg, border: `1px solid ${C.line}`, color: C.parchment, borderRadius: 8, padding: "8px 10px", fontSize: 13 };
+
+  const toggleTask = (tid) => onPatch((mm) => ({ ...mm, tasks: mm.tasks.map((t) => (t.id === tid ? { ...t, done: !t.done } : t)) }));
+  const toggleSub = (tid, sid) => onPatch((mm) => ({
+    ...mm,
+    tasks: mm.tasks.map((t) => t.id !== tid ? t : { ...t, subtasks: t.subtasks.map((st) => (st.id === sid ? { ...st, done: !st.done } : st)) }),
+  }));
+  const addTask = () => {
+    if (!taskText.trim()) return;
+    onPatch((mm) => ({ ...mm, tasks: [...mm.tasks, { id: uid(), text: taskText.trim(), done: false, subtasks: [] }] }));
+    setTaskText("");
+  };
+  const addSub = (tid) => {
+    if (!subText.trim()) return;
+    onPatch((mm) => ({
+      ...mm,
+      tasks: mm.tasks.map((t) => (t.id !== tid ? t : { ...t, subtasks: [...t.subtasks, { id: uid(), text: subText.trim(), done: false }] })),
+    }));
+    setSubText(""); setSubFor(null);
+  };
+  const removeTask = (tid) => onPatch((mm) => ({ ...mm, tasks: mm.tasks.filter((t) => t.id !== tid) }));
+  const removeSub = (tid, sid) => onPatch((mm) => ({
+    ...mm,
+    tasks: mm.tasks.map((t) => (t.id !== tid ? t : { ...t, subtasks: t.subtasks.filter((st) => st.id !== sid) })),
+  }));
+
+  if (m.claimedAt) {
+    return (
+      <div style={{ border: `1px solid ${C.moss}55`, borderRadius: 10, padding: "9px 12px", marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <span style={{ fontSize: 13, color: C.moss }}>✓ {m.title}</span>
+        <span style={{ fontSize: 11, color: C.dim }}>claimed {fmtDate(m.claimedAt)} · +{m.xp} XP</span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ border: `1px solid ${C.line}`, borderRadius: 10, padding: 12, marginTop: 10, opacity: locked ? 0.5 : 1 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div className="display" style={{ flex: 1, fontSize: 14, fontWeight: 700 }}>{m.title}</div>
+        <span style={{ fontSize: 11, color: C.gold, whiteSpace: "nowrap" }}>+{m.xp} XP</span>
+        {!locked && <button onClick={onRemove} style={{ background: "none", border: "none", color: C.dim, fontSize: 14, padding: "0 2px" }} aria-label={`Remove milestone ${m.title}`}>×</button>}
+      </div>
+      <div style={{ margin: "8px 0 2px" }}><Bar frac={frac} color={C.arcane} height={5} /></div>
+
+      {locked ? (
+        <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", marginTop: 6 }}>⛓ Sealed until the previous milestone closes.</div>
+      ) : (
+        <>
+          {m.tasks.map((t) => {
+            const hasSubs = t.subtasks.length > 0;
+            const done = taskDone(t);
+            return (
+              <div key={t.id} style={{ marginTop: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {hasSubs ? (
+                    <span title="Completes when all its steps are done"
+                      style={{ width: 17, height: 17, borderRadius: 5, flexShrink: 0, border: `1.5px solid ${done ? C.moss : C.line}`, background: done ? C.moss : "transparent", color: C.bg, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {done ? "✓" : ""}
+                    </span>
+                  ) : (
+                    <button onClick={() => toggleTask(t.id)} aria-label={`Toggle ${t.text}`}
+                      style={{ width: 17, height: 17, borderRadius: 5, flexShrink: 0, border: `1.5px solid ${done ? C.moss : C.dim}`, background: done ? C.moss : "transparent", color: C.bg, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {done ? "✓" : ""}
+                    </button>
+                  )}
+                  <span style={{ flex: 1, fontSize: 13, color: done ? C.dim : C.parchment, textDecoration: done ? "line-through" : "none" }}>{t.text}</span>
+                  <button onClick={() => { setSubFor(subFor === t.id ? null : t.id); setSubText(""); }}
+                    style={{ background: "none", border: "none", color: C.dim, fontSize: 11, textDecoration: "underline" }}>+ sub</button>
+                  <button onClick={() => removeTask(t.id)} style={{ background: "none", border: "none", color: C.dim, fontSize: 13, padding: "0 2px" }} aria-label={`Remove ${t.text}`}>×</button>
+                </div>
+                {t.subtasks.map((st) => (
+                  <div key={st.id} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, paddingLeft: 25 }}>
+                    <button onClick={() => toggleSub(t.id, st.id)} aria-label={`Toggle ${st.text}`}
+                      style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, border: `1.5px solid ${st.done ? C.moss : C.dim}`, background: st.done ? C.moss : "transparent", color: C.bg, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {st.done ? "✓" : ""}
+                    </button>
+                    <span style={{ flex: 1, fontSize: 12, color: st.done ? C.dim : C.parchment, textDecoration: st.done ? "line-through" : "none" }}>{st.text}</span>
+                    <button onClick={() => removeSub(t.id, st.id)} style={{ background: "none", border: "none", color: C.dim, fontSize: 12, padding: "0 2px" }} aria-label={`Remove ${st.text}`}>×</button>
+                  </div>
+                ))}
+                {subFor === t.id && (
+                  <div style={{ display: "flex", gap: 6, marginTop: 5, paddingLeft: 25 }}>
+                    <input style={{ ...inp, flex: 1 }} autoFocus placeholder="Step — e.g. finish chapter 3" value={subText}
+                      onChange={(e) => setSubText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSub(t.id)} />
+                    <GhostBtn color={C.dim} onClick={() => addSub(t.id)} style={{ padding: "5px 10px", fontSize: 12 }}>Add</GhostBtn>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <input style={{ ...inp, flex: 1 }} placeholder="New task" value={taskText} onChange={(e) => setTaskText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()} />
+            <GhostBtn color={C.dim} onClick={addTask} style={{ padding: "5px 12px", fontSize: 12 }}>+ Task</GhostBtn>
+          </div>
+          {claimable && (
+            <button onClick={onClaim}
+              style={{ width: "100%", marginTop: 10, background: C.gold, color: C.bg, border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, animation: m.tasks.length > 0 ? "glowpulse 1.6s infinite" : "none" }}>
+              Claim milestone · +{m.xp} XP
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ── Skills (milestones, passion, long-horizon view) ── */
 
 /* 8-week training histogram from logs */
@@ -1575,7 +2093,11 @@ function SkillsView({ state, setState, grantXp }) {
 
   const renderCard = (sk) => (
     <SkillCard key={sk.id} sk={sk}
-      fedBy={state.quests.filter((q) => q.skillId === sk.id).map((q) => q.title)}
+      fedBy={[
+        ...state.quests.filter((q) => (q.skillIds || []).includes(sk.id)).map((q) => q.title),
+        ...state.dailies.filter((d) => (d.skillIds || []).includes(sk.id)).map((d) => d.name),
+        ...(state.weeklies || []).filter((w) => (w.skillIds || []).includes(sk.id)).map((w) => w.name),
+      ]}
       editing={editing === sk.id}
       onEditToggle={() => setEditing(editing === sk.id ? null : sk.id)}
       onPatch={(p) => patchSkill(sk.id, p)}
@@ -1764,7 +2286,7 @@ function SkillCard({ sk, fedBy, editing, onEditToggle, onPatch, onPractice, onMi
         <div style={{ marginTop: 12, fontSize: 12, color: C.dim }}>
           {fedBy && fedBy.length > 0
             ? <>Fed by: <span style={{ color: C.arcane }}>{fedBy.join(", ")}</span></>
-            : <span style={{ fontStyle: "italic" }}>Not yet fed by any quest — link one when posting a quest.</span>}
+            : <span style={{ fontStyle: "italic" }}>Not yet fed — link a quest or daily to it.</span>}
         </div>
       ) : (
         <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
@@ -2122,6 +2644,7 @@ function TabBar({ tab, setTab }) {
   const tabs = [
     { id: "character", label: "Character", icon: "◈" },
     { id: "quests", label: "Quests", icon: "⚔" },
+    { id: "campaigns", label: "Campaigns", icon: "⚐" },
     { id: "skills", label: "Skills", icon: "✦" },
     { id: "trackers", label: "Vitals", icon: "♥" },
     { id: "shop", label: "Shop", icon: "⚜" },

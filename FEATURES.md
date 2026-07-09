@@ -73,8 +73,9 @@ Two kinds, shown in separate sections on the Skills tab:
 - **Disciplines** — practiced directly. Three practice buttons per card:
   Trained +10 XP, Deep practice +25, Breakthrough +50. Quests can also feed them.
 - **Domains** — higher-level fields (e.g. Entrepreneurship, Naturalist). No
-  practice buttons; they level **only** when a quest feeds them. The card shows
-  "Fed by: [active quest titles]" or "Not yet fed by any quest."
+  practice buttons; they level **only** when quests, dailies, or weeklies feed
+  them. The card shows "Fed by: [linked quest/daily/weekly names]" or
+  "Not yet fed — link a quest or daily to it."
 
 Shared skill mechanics:
 - Level curve: 30·L·(L+1) cumulative XP.
@@ -99,7 +100,21 @@ Habits that reset at midnight. Each daily has:
 - **Cue** (optional): when/where implementation intention, shown in italics.
 - **Coping plan** (optional): "If I get stuck… / then I'll…" pair, shown as
   "⛨ If [obstacle] → [response]".
+- **Feeds skills** (optional, up to 3): each check-off grants the daily's full XP
+  to every linked skill and counts as a practice session ("trained today ✓",
+  histogram entry). This is how habits level Disciplines and Domains.
+- **Campaign tag** (optional): marks the daily as a commitment of one campaign.
 - One completion per day (checkbox); progress count in the section header.
+
+### Weekly Quests
+"Do this N times per week" quotas (e.g. gym 4×) — the days flex, only the count
+matters. Each weekly has a name, XP per rep, weekly target, passion flag, coping
+plan, skill feeds (up to 3, XP per rep), and optional campaign tag.
+- **+1 reps** grant the XP; the rep that hits the target pays **triple** (rep +
+  2× bonus) with a "Weekly target met" chronicle line.
+- Counts reset each Monday. **Week streak**: hitting the target increments it
+  immediately; a missed week (or any gap of inactivity) resets it to 0.
+- Achievement: **Steadfast** — hold a 4-week streak.
 
 ### Weekly Boss
 One hard thing to slay per week (Monday-to-Sunday week).
@@ -112,18 +127,21 @@ One hard thing to slay per week (Monday-to-Sunday week).
 
 ### Quest Log
 Project-scale goals, grouped under tier headings (empty tiers hidden):
-- **Epic Quests** (violet) — months of scope, +400 XP completion bonus.
 - **Main Quests** (gold) — weeks, +150 XP.
 - **Side Quests** (moss) — days, +50 XP.
+- **Epic Quests** (verdigris) — *retired*: months-long goals belong in Campaigns
+  now. Existing epics are grandfathered (render and claim as before, +400 XP)
+  but no new ones can be created; the tier is gone from the pickers and the AI
+  drafter.
 
 Each quest has:
 - Title, tier, passion flag, optional coping plan, creation date.
 - **Objectives (subtasks):** either ✓ one-time checks (with individual XP) or
   № running tallies (repeatable, +XP each). A quest with zero check-objectives is
   "open-ended" and can be completed any time.
-- **Feeds a skill** (optional): all XP from this quest (objectives and completion
-  bonus) is also applied to one chosen skill — Discipline or Domain — cascading
-  into its linked attributes. This is the only way Domains grow.
+- **Feeds skills** (optional, up to 3): all XP from this quest (objectives and
+  completion bonus) is also applied in full to each chosen skill — Discipline or
+  Domain — cascading into their linked attributes.
 - **Claim:** when all checks are done (or none exist) the completion bonus can be
   claimed; the quest moves to the Chronicle.
 - **Edit:** posted quests can be edited (title, objective text/XP, add/delete
@@ -148,6 +166,30 @@ posted, if never reviewed), a banner appears: *"⚖ The council convenes."*
   dismissed for the session ("Later").
 
 ---
+
+## Campaigns tab
+
+A **campaign** is one big goal measured in months (e.g. "Germany Prep") — what an
+epic quest was trying to be. Founded with a title and a sequencing choice; shown
+with an overall progress bar and %.
+
+- **Milestones**: the one-time, ordered chunks of the goal, each with its own XP
+  reward (default 100, set at creation). A milestone holds a checklist of
+  **tasks**, and tasks can hold **subtasks** (two levels). A task with subtasks
+  derives its done state — all subtasks checked completes it automatically; only
+  leaf rows are directly checkable. Progress rolls up: subtask → task → milestone
+  bar → campaign bar (mean of milestone fractions).
+- **Sequential locking** (optional, on by default): a milestone stays "Sealed
+  until the previous milestone closes." Claiming unlocks the next.
+- **Claiming**: when a milestone's tasks are all done (or it has none), a claim
+  button grants its XP and writes a `milestone`-type chronicle entry — campaign
+  milestones intentionally count toward the Summit/Peak Chaser achievements.
+- **Commitments**: dailies and weeklies tagged to the campaign appear inside the
+  campaign card with live state (checkable / +1-able right there) — the recurring
+  pace-keepers beside the one-time road markers.
+- Editing is frictionless (add/remove milestones, tasks, subtasks anytime — no
+  confirmation ritual; campaigns are living plans). Closing a whole campaign asks
+  a styled confirm; claimed rewards and chronicle entries survive.
 
 ## Vitals tab (trackers)
 
@@ -181,7 +223,7 @@ Logging Vitals earns no XP or gold by design.
 
 ---
 
-## Achievements (22)
+## Achievements (23)
 
 Unlocked automatically, shown as a badge grid on the Character tab.
 
@@ -199,6 +241,7 @@ Unlocked automatically, shown as a badge grid on the Character tab.
 | Thousand Deeds | 1,000 total XP |
 | Know Thyself | 10 tracker entries logged |
 | Strategist | Complete a goal review |
+| Steadfast | Hold a 4-week weekly-quota streak |
 | Treat Yourself | Redeem a reward |
 | Dragon's Hoard | Hold 500 gold at once |
 
@@ -218,7 +261,7 @@ Conquered, Completed Quests, then the full feed. Entry types: `xp` (any grant),
 All AI calls go through the `/api/claude` proxy (`src/lib/ai.js`).
 
 - **Sage's Counsel** (Character tab): on demand — intended weekly — the Sage reads
-  the last 7 days of chronicle plus skill/quest/vitals summaries and writes a
+  the last 7 days of chronicle plus skill/quest/weekly/campaign/vitals summaries and writes a
   120–170-word second-person reflection: one observed pattern, one thing working,
   one gentle nudge, one suggested focus. Last 8 reflections kept.
 - **Quest drafting** (new-quest form): goal + optional context notes → suggested
@@ -247,9 +290,15 @@ State shape (top level):
 ```
 player      { name, xp, gold, streak, lastActive, freezes }
 abilities   { int, wis, str, con, dex, cha }           // XP totals ("Attributes" in UI)
-quests      [{ id, title, tier, skillId, passion, copingIf, copingThen, createdAt,
+quests      [{ id, title, tier, skillIds: [up to 3], passion, copingIf, copingThen, createdAt,
                subtasks: [{ id, text, xp, type: "check"|"tally", done, count }] }]
-dailies     [{ id, name, xp, lastDone, cue, copingIf, copingThen, passion }]
+dailies     [{ id, name, xp, lastDone, cue, copingIf, copingThen, passion,
+               skillIds: [up to 3], campaignId }]
+weeklies    [{ id, name, xp, target, count, weekId, streak, passion,
+               copingIf, copingThen, skillIds: [up to 3], campaignId }]
+campaigns   [{ id, title, createdAt, sequential,
+               milestones: [{ id, title, xp, claimedAt,
+                              tasks: [{ id, text, done, subtasks: [{ id, text, done }] }] }] }]
 boss        null | { id, name, xp, weekId, defeated, req: null|{ name, target, count } }
 skills      [{ id, name, xp, kind: "discipline"|"domain", abilities: [primary, secondary?],
                logs: [{ date, xp, label }], passion, totalSessions,
@@ -269,9 +318,15 @@ lastGoalReview  "YYYY-MM-DD" | null
 
 When using this file to generate content ideas, useful framings:
 
-- **Quests:** propose title, tier (side/main/epic by scope), 3–6 concrete
+- **Quests:** propose title, tier (side=days, main=weeks), 3–6 concrete
   verifiable objectives (check vs tally) with XP 10–100 by effort, an optional
-  coping plan, and which skill it should feed. Passion flag if it's a love-not-duty.
+  coping plan, and which skills (up to 3) it should feed. Passion flag if it's a
+  love-not-duty. Months-long goals should be proposed as campaigns instead.
+- **Weeklies:** name, a realistic times-per-week target, XP per rep, skills fed,
+  and a coping plan for the likely miss scenario.
+- **Campaigns:** a theme title plus 3–6 ordered milestones (each with an XP
+  reward ~100 and a task checklist, subtasks where useful), and which dailies/
+  weeklies should be tagged as its commitments.
 - **Skills:** decide Discipline (practiceable) vs Domain (quest-fed field), which
   one or two attributes it feeds, and whether it's a passion.
 - **Vitals:** pick the metric type — simple (observe), target value (reach and
@@ -291,7 +346,8 @@ Update this table with each feature commit.
 
 | Date | Commit | Changes |
 |---|---|---|
-| 2026-07-07 | `HEAD` | "Candlelit scriptorium" retheme: warm umber/vellum/candle-gold palette (arcane role now verdigris, ember now oxblood, moss now sage-olive), IM Fell English display type, parchment grain + candlelight vignette, fleuron section dividers, gold corner brackets on cards, drop caps on Sage reflections, rubricated chronicle initials. Coping-plan display now strips a leading "If/then" typed by the user. |
+| 2026-07-08 | `HEAD` | Multi-skill feeding: quests and dailies link up to 3 skills (`skillIds`); skill-linked dailies count as practice sessions. New Weekly Quests (N-times-per-week quotas, triple-XP target rep, week streaks, Steadfast achievement). New Campaigns tab: months-long containers with XP-rewarded milestones, two-level task checklists, optional sequential locking, rollup progress, and tagged daily/weekly commitments completable in place. Epic quest tier retired (existing epics grandfathered). Sage now sees weeklies and campaigns. |
+| 2026-07-07 | `1f6fc2f` | "Candlelit scriptorium" retheme: warm umber/vellum/candle-gold palette (arcane role now verdigris, ember now oxblood, moss now sage-olive), IM Fell English display type, parchment grain + candlelight vignette, fleuron section dividers, gold corner brackets on cards, drop caps on Sage reflections, rubricated chronicle initials. Coping-plan display now strips a leading "If/then" typed by the user. |
 | 2026-07-07 | `6460de6` | Added "Reset character" button on the Character tab — confirmation modal warning of permanent erasure, then overwrites the save with a fresh `seedState()`. |
 | 2026-07-07 | `0d14af8` | "Abilities" renamed to "Attributes" (display only). Skills split into Disciplines and Domains (quest-fed, "Fed by" line). Quest objectives deletable in form; posted quests editable behind a "did the goal genuinely change?" modal. Quest Log grouped by tier headings. Vitals metric types (simple / target value / nightly target) with dashed reference lines and 7/30-day rolling averages; replaced v1 outcome-target progress bar, reach detection, and Trueshot achievement with purely informational display. |
 | 2026-07-06 | `cb068da` | Coping plans ("If I get stuck… / then I'll…") on dailies and quests. Monthly Goal Review (keep/revise/retire, +30 XP, Strategist achievement). Vitals outcome targets v1 (progress bar + reach detection — superseded next commit). |
